@@ -20,7 +20,14 @@
             }
         ],
         "security": {
-            "csp": null
+            "csp": {
+                "default-src": "'self' customprotocol: asset:",
+                "connect-src": "ipc: http://ipc.localhost",
+                "font-src": "'self' data:",
+                "img-src": "'self' asset: http://asset.localhost blob: data:",
+                "style-src": "'self' 'unsafe-inline'"
+            },
+            "devCsp": null
         }
     },
     "bundle": {
