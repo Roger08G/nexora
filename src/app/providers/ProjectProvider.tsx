@@ -1,4 +1,4 @@
-import { createContext, useContext, useMemo, useState } from "react";
+import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { toast } from "sonner";
@@ -45,6 +45,26 @@ export function ProjectProvider({ children }: ProjectProviderProps) {
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [projectLoad, setProjectLoad] = useState<ProjectLoadState | null>(null);
+    const e2eBootstrapStarted = useRef(false);
+
+    useEffect(() => {
+        if (import.meta.env.MODE !== "e2e" || e2eBootstrapStarted.current) return;
+        function openE2eProject(event: Event) {
+            const root = (event as CustomEvent<unknown>).detail;
+            if (e2eBootstrapStarted.current || typeof root !== "string" || root.trim().length === 0)
+                return;
+            e2eBootstrapStarted.current = true;
+            void perform("open", projectNameFromRoot(root), () =>
+                runCommand<NexoraProject>("open_project", { root }),
+            ).catch((cause) => {
+                const message = getErrorMessage(cause);
+                setError(message);
+                toast.error("No se pudo preparar el proyecto E2E", { description: message });
+            });
+        }
+        window.addEventListener("nexora:e2e-open-project", openE2eProject);
+        return () => window.removeEventListener("nexora:e2e-open-project", openE2eProject);
+    }, []);
 
     async function selectDirectory(title: string) {
         const selection = await open({ directory: true, multiple: false, title });

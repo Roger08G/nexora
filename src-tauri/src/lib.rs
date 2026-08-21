@@ -11,8 +11,13 @@ use state::AppState;
 pub fn run() {
     let state = AppState::new().expect("failed to initialize Nexora services");
 
-    tauri::Builder::default()
-        .plugin(tauri_plugin_dialog::init())
+    let builder = tauri::Builder::default().plugin(tauri_plugin_dialog::init());
+    #[cfg(feature = "e2e")]
+    let builder = builder
+        .plugin(tauri_plugin_wdio::init())
+        .plugin(tauri_plugin_wdio_webdriver::init());
+
+    builder
         .manage(state)
         .invoke_handler(tauri::generate_handler![
             projects::create_project,

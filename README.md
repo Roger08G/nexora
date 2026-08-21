@@ -140,6 +140,25 @@ cargo test --manifest-path src-tauri/Cargo.toml --all-targets
 cargo build --manifest-path src-tauri/Cargo.toml --release
 ```
 
+La suite E2E abre el binario de depuración en el WebView real de Tauri mediante WebdriverIO. Crea
+un proyecto `.nexora` y una API Bun temporales, comprueba la interfaz y ejecuta operaciones reales
+contra los runtimes locales de MongoDB y PostgreSQL. Al terminar detiene los procesos y elimina el
+proyecto de prueba.
+
+```bash
+bun run test:e2e
+```
+
+Para repetir solo la suite sobre un binario E2E ya compilado:
+
+```bash
+bun run test:e2e:run
+```
+
+En Windows, estas pruebas requieren WebView2 y los binarios locales de MongoDB y PostgreSQL
+descritos arriba. La característica Rust `e2e` y los permisos WebDriver están aislados en la
+configuración `src-tauri/tauri.e2e.conf.json`; no se incluyen en el binario normal de producción.
+
 Las pruebas reales de los runtimes son opcionales porque requieren sus binarios y Windows Credential
 Manager:
 

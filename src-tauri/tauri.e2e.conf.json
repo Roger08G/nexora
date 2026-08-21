@@ -1,0 +1,19 @@
+{
+    "build": {
+        "beforeBuildCommand": "bun run build:e2e"
+    },
+    "app": {
+        "withGlobalTauri": true,
+        "security": {
+            "capabilities": [
+                "default",
+                {
+                    "identifier": "e2e-webdriver",
+                    "description": "Embedded WebDriver available only in E2E builds",
+                    "windows": ["main"],
+                    "permissions": ["wdio:default", "wdio-webdriver:default"]
+                }
+            ]
+        }
+    }
+}
