@@ -1,6 +1,7 @@
 import { createContext, useContext, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
+import { toast } from "sonner";
 import { getErrorMessage, runCommand } from "@/shared/services/native";
 
 export type NexoraProject = {
@@ -95,7 +96,9 @@ export function ProjectProvider({ children }: ProjectProviderProps) {
                 ready: true,
             });
         } catch (cause) {
-            setError(getErrorMessage(cause));
+            const message = getErrorMessage(cause);
+            setError(message);
+            toast.error("No se pudo cargar el proyecto", { description: message });
             setProjectLoad(null);
         } finally {
             setBusy(false);
@@ -108,7 +111,15 @@ export function ProjectProvider({ children }: ProjectProviderProps) {
             clearError: () => setError(null),
             createProject,
             error,
-            finishProjectLoad: () => setProjectLoad(null),
+            finishProjectLoad: () => {
+                if (projectLoad) {
+                    toast.success(
+                        projectLoad.kind === "create" ? "Proyecto creado" : "Proyecto cargado",
+                        { description: projectLoad.projectName },
+                    );
+                }
+                setProjectLoad(null);
+            },
             openProject,
             project,
             projectLoad,

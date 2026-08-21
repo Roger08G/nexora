@@ -127,7 +127,7 @@ export function LoadingPage({
                 <div className="loading-screen__hero">
                     <h1 className="loading-fade-up loading-delay-1">NEXORA</h1>
                     <p className="loading-fade-up loading-delay-2">
-                        Cargando <strong>{projectName}</strong>. Tus APIs, MongoDB y SQLite
+                        Cargando <strong>{projectName}</strong>. Tus APIs, MongoDB y PostgreSQL
                         continúan completamente en local.
                     </p>
                 </div>

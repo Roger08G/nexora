@@ -1,6 +1,6 @@
 import { useState } from "react";
-import { FiSave, FiSend } from "react-icons/fi";
-import type { RequestDraft } from "@/modules/api/types";
+import { FiCheck, FiLoader, FiSave, FiSend } from "react-icons/fi";
+import type { RequestDraft, RequestSaveState } from "@/modules/api/types";
 import { KeyValueEditor } from "@/modules/api/components/KeyValueEditor";
 import { MethodSelect } from "@/modules/api/components/MethodSelect";
 import { ActionButton } from "@/shared/components/ui/ActionButton";
@@ -8,15 +8,16 @@ import { ActionButton } from "@/shared/components/ui/ActionButton";
 type EditorSection = "params" | "headers" | "body" | "auth";
 
 type RequestEditorProps = {
+    autoSave: boolean;
     canSave: boolean;
     draft: RequestDraft;
-    isSaving: boolean;
     isSending: boolean;
     onChange: (draft: RequestDraft) => void;
     onNameChange: (name: string) => void;
     onSave: () => void;
     onSend: () => void;
     requestName: string;
+    saveState: RequestSaveState;
 };
 
 const SECTIONS: readonly { id: EditorSection; label: string }[] = [
@@ -27,20 +28,34 @@ const SECTIONS: readonly { id: EditorSection; label: string }[] = [
 ];
 
 export function RequestEditor({
+    autoSave,
     canSave,
     draft,
-    isSaving,
     isSending,
     onChange,
     onNameChange,
     onSave,
     onSend,
     requestName,
+    saveState,
 }: RequestEditorProps) {
     const [activeSection, setActiveSection] = useState<EditorSection>("params");
 
     return (
         <section className="request-editor">
+            <div className="request-editor__identity">
+                <label>
+                    <span>Nombre de la petición</span>
+                    <input
+                        aria-label="Nombre de la petición"
+                        maxLength={120}
+                        onChange={(event) => onNameChange(event.target.value)}
+                        placeholder="Ej. Crear usuario"
+                        value={requestName}
+                    />
+                </label>
+                <SaveState autoSave={autoSave} state={saveState} />
+            </div>
             <div className="request-editor__bar">
                 <MethodSelect
                     onChange={(method) => onChange({ ...draft, method })}
@@ -57,13 +72,13 @@ export function RequestEditor({
                     {isSending ? "Enviando" : "Enviar"}
                 </ActionButton>
                 <ActionButton
-                    disabled={!canSave || isSaving}
+                    disabled={!canSave || saveState === "saving"}
                     icon={FiSave}
                     onClick={onSave}
                     title={canSave ? "Guardar en .nexora" : "Abre un proyecto para guardar"}
                     tone="secondary"
                 >
-                    {isSaving ? "Guardando" : "Guardar"}
+                    {saveState === "saving" ? "Guardando" : "Guardar"}
                 </ActionButton>
             </div>
 
@@ -88,13 +103,6 @@ export function RequestEditor({
                         </button>
                     ))}
                 </div>
-                <input
-                    aria-label="Nombre de la petición"
-                    className="panel-heading__name"
-                    maxLength={120}
-                    onChange={(event) => onNameChange(event.target.value)}
-                    value={requestName}
-                />
             </div>
 
             <div className="request-editor__content">
@@ -138,4 +146,30 @@ export function RequestEditor({
             </div>
         </section>
     );
+}
+
+function SaveState({ autoSave, state }: { autoSave: boolean; state: RequestSaveState }) {
+    if (!autoSave && state === "idle") return <span className="request-save-state">Manual</span>;
+    if (state === "saving") {
+        return (
+            <span className="request-save-state" data-state="saving">
+                <FiLoader aria-hidden="true" /> Guardando…
+            </span>
+        );
+    }
+    if (state === "saved") {
+        return (
+            <span className="request-save-state" data-state="saved">
+                <FiCheck aria-hidden="true" /> Guardado
+            </span>
+        );
+    }
+    if (state === "error") {
+        return (
+            <span className="request-save-state" data-state="error">
+                Error al guardar
+            </span>
+        );
+    }
+    return <span className="request-save-state">Cambios sin guardar</span>;
 }

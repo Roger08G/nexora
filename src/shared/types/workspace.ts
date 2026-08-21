@@ -1,7 +1,7 @@
 import type { IconType } from "react-icons";
 
 export type WorkspaceId =
-    "api" | "mongodb" | "sqlite" | "history" | "environments" | "monitors" | "settings";
+    "api" | "mongodb" | "postgresql" | "history" | "environments" | "monitors" | "settings";
 
 export type WorkspaceGroup = "primary" | "secondary" | "footer";
 

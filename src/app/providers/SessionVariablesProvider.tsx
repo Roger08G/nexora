@@ -1,5 +1,6 @@
 import { createContext, useContext, useMemo, useState } from "react";
 import type { ReactNode } from "react";
+import { toast } from "sonner";
 
 export type SessionVariable = {
     id: string;
@@ -23,12 +24,15 @@ export function SessionVariablesProvider({ children }: { children: ReactNode }) 
     const value = useMemo<SessionVariablesContextValue>(
         () => ({
             addVariable: () =>
-                setVariables((current) => [
-                    ...current,
-                    { id: crypto.randomUUID(), key: "", value: "" },
-                ]),
+                setVariables((current) => {
+                    toast.info("Variable de sesión añadida");
+                    return [...current, { id: crypto.randomUUID(), key: "", value: "" }];
+                }),
             removeVariable: (id) =>
-                setVariables((current) => current.filter((variable) => variable.id !== id)),
+                setVariables((current) => {
+                    toast.success("Variable de sesión eliminada");
+                    return current.filter((variable) => variable.id !== id);
+                }),
             updateVariable: (id, changes) =>
                 setVariables((current) =>
                     current.map((variable) =>

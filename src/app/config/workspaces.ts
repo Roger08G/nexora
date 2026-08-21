@@ -27,9 +27,9 @@ export const WORKSPACES: readonly WorkspaceDefinition[] = [
         icon: FiDatabase,
     },
     {
-        id: "sqlite",
-        label: "SQLite Studio",
-        description: "Tablas y consultas SQL",
+        id: "postgresql",
+        label: "PostgreSQL Studio",
+        description: "Servidor SQL local por proyecto",
         accent: "orange",
         group: "primary",
         icon: FiHardDrive,

@@ -20,7 +20,7 @@ pub enum AppError {
     #[error("{0}")]
     Mongo(#[from] mongodb::error::Error),
     #[error("{0}")]
-    Sqlite(#[from] rusqlite::Error),
+    Postgres(#[from] tokio_postgres::Error),
     #[error("{0}")]
     Credential(String),
     #[error("{0}")]
@@ -44,7 +44,7 @@ impl From<AppError> for CommandError {
             AppError::Serialization(_) => "serialization_error",
             AppError::Http(_) => "http_error",
             AppError::Mongo(_) => "mongodb_error",
-            AppError::Sqlite(_) => "sqlite_error",
+            AppError::Postgres(_) => "postgresql_error",
             AppError::Credential(_) => "credential_error",
             AppError::Internal(_) => "internal_error",
         };

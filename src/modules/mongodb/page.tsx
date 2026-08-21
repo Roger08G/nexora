@@ -1,5 +1,8 @@
 import { useEffect, useState } from "react";
-import { FiPlus, FiRefreshCw } from "react-icons/fi";
+import { FiDatabase, FiPlus, FiRefreshCw } from "react-icons/fi";
+import { toast } from "sonner";
+import { useAppSettings } from "@/app/providers/AppSettingsProvider";
+import { useGlobalSearch } from "@/app/providers/GlobalSearchProvider";
 import { useProject } from "@/app/providers/ProjectProvider";
 import { MongoConnectionForm } from "@/modules/mongodb/components/MongoConnectionForm";
 import { MongoDocumentDialog } from "@/modules/mongodb/components/MongoDocumentDialog";
@@ -40,6 +43,8 @@ type EditorState = {
 type ConnectionMode = "external" | "managed";
 
 export function MongoDbPage() {
+    const { settings } = useAppSettings();
+    const { registerItems } = useGlobalSearch();
     const { project } = useProject();
     const [uri, setUri] = useState("mongodb://localhost:27017");
     const [connectionId, setConnectionId] = useState<string | null>(null);
@@ -89,6 +94,38 @@ export function MongoDbPage() {
         [connectionId, connectionMode],
     );
 
+    useEffect(() => {
+        const items = connectionId
+            ? databases.flatMap((database) => [
+                  {
+                      action: () => void expandDatabase(connectionId, database.name),
+                      description: `${database.collections?.length ?? 0} colecciones`,
+                      group: "MongoDB",
+                      icon: FiDatabase,
+                      id: `mongodb-database-${database.name}`,
+                      keywords: database.name,
+                      title: database.name,
+                      workspace: "mongodb" as const,
+                  },
+                  ...(database.collections ?? []).map((collection) => ({
+                      action: () => {
+                          const next = { database: database.name, collection };
+                          setSelection(next);
+                          void query(connectionId, next);
+                      },
+                      description: database.name,
+                      group: "Colecciones",
+                      icon: FiDatabase,
+                      id: `mongodb-collection-${database.name}-${collection}`,
+                      keywords: `${database.name} ${collection}`,
+                      title: collection,
+                      workspace: "mongodb" as const,
+                  })),
+              ])
+            : [];
+        registerItems("mongodb-namespaces", items);
+    }, [connectionId, databases, filter, limit, projection, registerItems]);
+
     async function connectExternal() {
         setIsLoading(true);
         setError(null);
@@ -97,8 +134,11 @@ export function MongoDbPage() {
             setConnectionMode("external");
             setConnectionLabel("Servidor externo");
             await activateConnection(connection);
+            toast.success("MongoDB conectado", { description: "Servidor externo" });
         } catch (cause) {
-            setError(getErrorMessage(cause));
+            const message = getErrorMessage(cause);
+            setError(message);
+            toast.error("No se pudo conectar a MongoDB", { description: message });
         } finally {
             setIsLoading(false);
         }
@@ -114,8 +154,13 @@ export function MongoDbPage() {
             setConnectionMode("managed");
             setConnectionLabel(`Local · 127.0.0.1:${connection.port}`);
             await activateConnection(connection);
+            toast.success("MongoDB local iniciado", {
+                description: `127.0.0.1:${connection.port} · ${connection.version}`,
+            });
         } catch (cause) {
-            setError(getErrorMessage(cause));
+            const message = getErrorMessage(cause);
+            setError(message);
+            toast.error("No se pudo iniciar MongoDB local", { description: message });
         } finally {
             setIsLoading(false);
         }
@@ -161,8 +206,17 @@ export function MongoDbPage() {
                 projection,
             });
             setDocuments(result.documents);
+            toast.success("Consulta MongoDB completada", {
+                description: `${result.count} documentos`,
+                id: "mongodb-query",
+            });
         } catch (cause) {
-            setError(getErrorMessage(cause));
+            const message = getErrorMessage(cause);
+            setError(message);
+            toast.error("Error en la consulta MongoDB", {
+                description: message,
+                id: "mongodb-query",
+            });
         } finally {
             setIsLoading(false);
         }
@@ -182,6 +236,7 @@ export function MongoDbPage() {
         setSelection(null);
         setDocuments([]);
         setError(null);
+        toast.success("MongoDB desconectado");
     }
 
     async function saveDocument() {
@@ -207,10 +262,15 @@ export function MongoDbPage() {
                     update: JSON.stringify({ $set: parsed }),
                 });
             }
+            toast.success(
+                editor.mode === "insert" ? "Documento insertado" : "Documento actualizado",
+            );
             setEditor(null);
             await query();
         } catch (cause) {
-            setEditorError(getErrorMessage(cause));
+            const message = getErrorMessage(cause);
+            setEditorError(message);
+            toast.error("No se pudo guardar el documento", { description: message });
         } finally {
             setIsLoading(false);
         }
@@ -218,7 +278,11 @@ export function MongoDbPage() {
 
     async function removeDocument(document: Record<string, unknown>) {
         if (!connectionId || !selection || document._id === undefined) return;
-        if (!window.confirm("¿Eliminar este documento? Esta acción no se puede deshacer.")) return;
+        if (
+            settings.confirmDestructiveActions &&
+            !window.confirm("¿Eliminar este documento? Esta acción no se puede deshacer.")
+        )
+            return;
         setIsLoading(true);
         try {
             await deleteMongoDocument({
@@ -226,9 +290,12 @@ export function MongoDbPage() {
                 connectionId,
                 filter: JSON.stringify({ _id: document._id }),
             });
+            toast.success("Documento eliminado");
             await query();
         } catch (cause) {
-            setError(getErrorMessage(cause));
+            const message = getErrorMessage(cause);
+            setError(message);
+            toast.error("No se pudo eliminar el documento", { description: message });
         } finally {
             setIsLoading(false);
         }
@@ -254,8 +321,11 @@ export function MongoDbPage() {
             setSelection(next);
             setDocuments([]);
             setNamespaceEditor((current) => ({ ...current, open: false }));
+            toast.success("Colección creada", { description: `${database}.${collection}` });
         } catch (cause) {
-            setNamespaceError(getErrorMessage(cause));
+            const message = getErrorMessage(cause);
+            setNamespaceError(message);
+            toast.error("No se pudo crear la colección", { description: message });
         } finally {
             setIsLoading(false);
         }

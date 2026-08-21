@@ -1,46 +1,44 @@
 import { FiDownload, FiPlay } from "react-icons/fi";
-import type { SqliteQueryResult } from "@/modules/sqlite/types";
+import type { PostgresQueryResult, PostgresSelection } from "@/modules/postgresql/types";
 import { ActionButton } from "@/shared/components/ui/ActionButton";
 import { StatusBadge } from "@/shared/components/ui/StatusBadge";
 
-type SqlWorkbenchProps = {
+type PostgresWorkbenchProps = {
     error: string | null;
-    hasDatabase: boolean;
     isLoading: boolean;
     onExecute: () => void;
     onSqlChange: (sql: string) => void;
-    result: SqliteQueryResult | null;
-    selectedTable: string;
+    result: PostgresQueryResult | null;
+    selection: PostgresSelection | null;
     sql: string;
 };
 
-export function SqlWorkbench({
+export function PostgresWorkbench({
     error,
-    hasDatabase,
     isLoading,
     onExecute,
     onSqlChange,
     result,
-    selectedTable,
+    selection,
     sql,
-}: SqlWorkbenchProps) {
+}: PostgresWorkbenchProps) {
     return (
         <div className="module-workbench">
             <header className="workspace-heading">
                 <div>
-                    <strong>Editor SQL</strong>
+                    <strong>Editor PostgreSQL</strong>
                     <small>·</small>
-                    <span>{selectedTable || "sin tabla"}</span>
+                    <span>{selection ? `${selection.schema}.${selection.table}` : "nexora"}</span>
                 </div>
                 <StatusBadge tone={error ? "danger" : result ? "success" : "neutral"}>
-                    {error ? "Error" : result ? `${result.durationMs} ms` : "Preparado"}
+                    {error ? "Error" : result ? `${Math.round(result.durationMs)} ms` : "Preparado"}
                 </StatusBadge>
                 <div className="workspace-heading__actions">
                     <ActionButton disabled icon={FiDownload} tone="ghost">
                         Exportar CSV
                     </ActionButton>
                     <ActionButton
-                        disabled={!hasDatabase || isLoading}
+                        disabled={isLoading}
                         icon={FiPlay}
                         onClick={onExecute}
                         tone="primary"
@@ -56,7 +54,7 @@ export function SqlWorkbench({
                     ))}
                 </div>
                 <textarea
-                    aria-label="Consulta SQL"
+                    aria-label="Consulta PostgreSQL"
                     onChange={(event) => onSqlChange(event.target.value)}
                     spellCheck={false}
                     value={sql}
@@ -76,16 +74,12 @@ export function SqlWorkbench({
                 </div>
                 <span className="panel-heading__context">{resultSummary(result, error)}</span>
             </div>
-            <SqlResult error={error} hasDatabase={hasDatabase} result={result} />
+            <PostgresResult error={error} result={result} />
         </div>
     );
 }
 
-function SqlResult({
-    error,
-    hasDatabase,
-    result,
-}: Pick<SqlWorkbenchProps, "error" | "hasDatabase" | "result">) {
+function PostgresResult({ error, result }: Pick<PostgresWorkbenchProps, "error" | "result">) {
     if (error) {
         return (
             <div className="result-empty result-empty--error">
@@ -119,11 +113,11 @@ function SqlResult({
             </div>
         );
     }
-    if (result && !result.readonly) {
+    if (result) {
         return (
             <div className="result-empty">
                 <FiPlay aria-hidden="true" />
-                <h2>Consulta completada</h2>
+                <h2>Sentencia completada</h2>
                 <p>{result.affectedRows} filas afectadas.</p>
             </div>
         );
@@ -131,17 +125,13 @@ function SqlResult({
     return (
         <div className="result-empty">
             <FiPlay aria-hidden="true" />
-            <h2>{hasDatabase ? "Lista para ejecutar" : "Abre un archivo SQLite"}</h2>
-            <p>
-                {hasDatabase
-                    ? "Escribe una única sentencia SQL. Las escrituras requieren confirmación."
-                    : "Selecciona un archivo local desde el panel lateral."}
-            </p>
+            <h2>PostgreSQL está listo</h2>
+            <p>Ejecuta una sentencia SQL. Cualquier escritura requiere confirmación.</p>
         </div>
     );
 }
 
-function resultSummary(result: SqliteQueryResult | null, error: string | null) {
+function resultSummary(result: PostgresQueryResult | null, error: string | null) {
     if (error) return error;
     if (!result) return "Sin ejecutar";
     if (!result.readonly) return `${result.affectedRows} filas afectadas`;

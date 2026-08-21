@@ -1,0 +1,23 @@
+[data-sonner-toaster][data-x-position="right"] {
+    right: 18px;
+}
+
+[data-sonner-toast].nexora-toast {
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 9px;
+    background: rgba(23, 21, 30, 0.96);
+    box-shadow: 0 18px 50px rgba(0, 0, 0, 0.42);
+    color: var(--text);
+    font-family: "Rubik", sans-serif;
+    backdrop-filter: blur(12px);
+}
+
+[data-sonner-toast].nexora-toast [data-description] {
+    color: var(--text-muted);
+}
+
+[data-sonner-toast].nexora-toast [data-close-button] {
+    border-color: var(--border-strong);
+    background: var(--surface-raised);
+    color: var(--text-soft);
+}

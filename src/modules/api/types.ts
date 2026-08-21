@@ -43,6 +43,8 @@ export type RequestDraft = {
     body: string;
 };
 
+export type RequestSaveState = "idle" | "saved" | "saving" | "error";
+
 export type HttpResponse = {
     body: string;
     durationMs: number;

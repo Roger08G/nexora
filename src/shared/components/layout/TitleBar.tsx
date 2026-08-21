@@ -1,7 +1,10 @@
 import { FiSearch } from "react-icons/fi";
+import { useGlobalSearch } from "@/app/providers/GlobalSearchProvider";
 import { NexoraMark } from "@/shared/components/brand/NexoraMark";
 
 export function TitleBar() {
+    const { openSearch } = useGlobalSearch();
+
     return (
         <header className="title-bar">
             <div className="title-bar__brand">
@@ -13,9 +16,9 @@ export function TitleBar() {
             </div>
 
             <button
-                aria-label="Búsqueda global pendiente de implementación"
+                aria-label="Abrir búsqueda global"
                 className="title-bar__search"
-                disabled
+                onClick={openSearch}
                 type="button"
             >
                 <FiSearch aria-hidden="true" />

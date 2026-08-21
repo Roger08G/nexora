@@ -25,6 +25,17 @@
     overflow: hidden;
 }
 
+.workspace-view {
+    display: none;
+    min-width: 0;
+    min-height: 0;
+    flex: 1;
+}
+
+.workspace-view[data-active="true"] {
+    display: flex;
+}
+
 .title-bar {
     display: grid;
     z-index: 5;
@@ -41,6 +52,12 @@
 .title-bar__search {
     display: flex;
     align-items: center;
+}
+
+.title-bar__search:hover {
+    border-color: rgba(168, 100, 245, 0.28);
+    background: rgba(168, 100, 245, 0.055);
+    color: var(--text-soft);
 }
 
 .title-bar__brand {
@@ -454,6 +471,171 @@
     margin-top: 20px;
     color: #5d5665;
     font-size: 10.5px;
+}
+
+.command-palette-backdrop {
+    position: fixed;
+    z-index: 80;
+    inset: 0;
+    display: flex;
+    justify-content: center;
+    padding: min(14vh, 118px) 24px 24px;
+    background: rgba(5, 4, 8, 0.68);
+    backdrop-filter: blur(5px);
+}
+
+.command-palette {
+    width: min(680px, 100%);
+    height: fit-content;
+    max-height: min(650px, 76vh);
+    overflow: hidden;
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    border-radius: 13px;
+    background: #15131a;
+    box-shadow: 0 30px 100px rgba(0, 0, 0, 0.62);
+}
+
+.command-palette__input {
+    display: flex;
+    height: 58px;
+    align-items: center;
+    gap: 11px;
+    padding: 0 16px;
+    border-bottom: 1px solid var(--border);
+    color: var(--violet);
+    font-size: 18px;
+}
+
+.command-palette__input input {
+    min-width: 0;
+    flex: 1;
+    border: 0;
+    outline: 0;
+    background: transparent;
+    color: var(--text);
+    font-size: 14px;
+}
+
+.command-palette__input input::placeholder {
+    color: #696170;
+}
+
+.command-palette__input kbd {
+    padding: 3px 7px;
+    border: 1px solid var(--border-strong);
+    border-radius: 5px;
+    color: var(--text-muted);
+    font-size: 10px;
+}
+
+.command-palette__results {
+    max-height: min(510px, 62vh);
+    padding: 7px;
+    overflow: auto;
+}
+
+.command-palette__results > button {
+    display: grid;
+    width: 100%;
+    min-height: 54px;
+    padding: 8px 10px;
+    grid-template-columns: 36px minmax(0, 1fr) auto 18px;
+    align-items: center;
+    gap: 10px;
+    border: 0;
+    border-radius: 7px;
+    background: transparent;
+    color: var(--text-soft);
+    text-align: left;
+}
+
+.command-palette__results > button[data-selected="true"] {
+    background: rgba(168, 100, 245, 0.1);
+    color: var(--text);
+}
+
+.command-palette__icon {
+    display: grid;
+    width: 34px;
+    height: 34px;
+    place-items: center;
+    border-radius: 8px;
+    background: var(--surface-muted);
+    color: var(--violet);
+    font-size: 16px;
+}
+
+.command-palette__copy {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 3px;
+}
+
+.command-palette__copy strong {
+    overflow: hidden;
+    font-size: 12.5px;
+    font-weight: 560;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.command-palette__copy small {
+    overflow: hidden;
+    color: var(--text-muted);
+    font-family: var(--mono);
+    font-size: 9.5px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.command-palette__group {
+    color: #696270;
+    font-size: 9.5px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+}
+
+.command-palette__enter {
+    color: var(--violet);
+}
+
+.command-palette__empty {
+    display: flex;
+    min-height: 190px;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    color: var(--text-muted);
+    text-align: center;
+}
+
+.command-palette__empty svg {
+    margin-bottom: 12px;
+    color: #655d6c;
+    font-size: 24px;
+}
+
+.command-palette__empty strong {
+    color: var(--text-soft);
+    font-size: 13px;
+}
+
+.command-palette__empty span {
+    margin-top: 5px;
+    font-size: 11px;
+}
+
+.command-palette > footer {
+    display: flex;
+    min-height: 32px;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 15px;
+    padding: 0 12px;
+    border-top: 1px solid var(--border);
+    color: #625b69;
+    font-size: 9.5px;
 }
 
 @media (max-width: 1040px) {

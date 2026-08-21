@@ -201,6 +201,77 @@
     overflow: visible;
 }
 
+.request-editor__identity {
+    display: flex;
+    min-height: 52px;
+    align-items: center;
+    gap: 18px;
+    padding: 8px 14px;
+    border-bottom: 1px solid var(--border);
+    background: rgba(18, 17, 23, 0.48);
+}
+
+.request-editor__identity label {
+    display: flex;
+    min-width: 0;
+    flex: 1;
+    align-items: center;
+    gap: 12px;
+}
+
+.request-editor__identity label > span {
+    flex: 0 0 auto;
+    color: var(--text-muted);
+    font-size: 10.5px;
+    font-weight: 520;
+    letter-spacing: 0.05em;
+}
+
+.request-editor__identity input {
+    min-width: 0;
+    max-width: 460px;
+    height: 34px;
+    flex: 1;
+    padding: 0 10px;
+    border: 1px solid var(--border-strong);
+    border-radius: 5px;
+    background: var(--surface-raised);
+    color: var(--text);
+    font-size: 12.5px;
+    font-weight: 540;
+}
+
+.request-save-state {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    color: #6e6775;
+    font-size: 10.5px;
+    white-space: nowrap;
+}
+
+.request-save-state[data-state="saved"] {
+    color: var(--cyan);
+}
+
+.request-save-state[data-state="saving"] {
+    color: var(--violet);
+}
+
+.request-save-state[data-state="saving"] svg {
+    animation: request-save-spin 800ms linear infinite;
+}
+
+.request-save-state[data-state="error"] {
+    color: var(--red);
+}
+
+@keyframes request-save-spin {
+    to {
+        transform: rotate(360deg);
+    }
+}
+
 .response-panel {
     overflow: hidden;
 }
@@ -234,7 +305,10 @@
     font-family: var(--mono);
     font-size: 11.5px;
     font-weight: 700;
-    transition: border-color 140ms ease, background-color 140ms ease, box-shadow 140ms ease;
+    transition:
+        border-color 140ms ease,
+        background-color 140ms ease,
+        box-shadow 140ms ease;
 }
 
 .method-select__trigger:hover,
@@ -265,7 +339,9 @@
     border: 1px solid var(--border-strong);
     border-radius: var(--radius);
     background: #17151e;
-    box-shadow: 0 16px 34px rgba(0, 0, 0, 0.48), 0 0 0 1px rgba(168, 100, 245, 0.08);
+    box-shadow:
+        0 16px 34px rgba(0, 0, 0, 0.48),
+        0 0 0 1px rgba(168, 100, 245, 0.08);
 }
 
 .method-select__option {
@@ -281,7 +357,9 @@
     font-size: 11px;
     font-weight: 700;
     text-align: left;
-    transition: background-color 120ms ease, color 120ms ease;
+    transition:
+        background-color 120ms ease,
+        color 120ms ease;
 }
 
 .method-select__option:hover,
@@ -886,8 +964,14 @@
     line-height: 1.55;
 }
 
-.sqlite-sidebar .table-tree-item > svg:nth-child(2) {
+.postgres-sidebar .table-tree-item > svg:nth-child(2) {
     color: var(--orange);
+}
+
+.postgres-sidebar__empty {
+    margin: 5px 14px 10px 39px;
+    color: var(--text-faint);
+    font-size: 10.5px;
 }
 
 .column-list {
@@ -1084,6 +1168,44 @@
 
 .connection-form .action-button {
     align-self: flex-end;
+}
+
+.postgres-start__icon {
+    background: var(--orange-soft);
+    color: var(--orange);
+}
+
+.postgres-start__details {
+    display: grid;
+    margin-bottom: 22px;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px;
+}
+
+.postgres-start__details span {
+    display: flex;
+    min-width: 0;
+    padding: 12px;
+    flex-direction: column;
+    gap: 5px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: rgba(9, 8, 12, 0.38);
+}
+
+.postgres-start__details strong {
+    color: var(--text-soft);
+    font-size: 11.5px;
+    font-weight: 560;
+}
+
+.postgres-start__details small {
+    overflow: hidden;
+    color: var(--orange);
+    font-family: var(--mono);
+    font-size: 10px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 .connection-option {
@@ -1318,6 +1440,227 @@
 .variables-page {
     padding: 28px;
     overflow: auto;
+}
+
+.settings-page {
+    padding: 28px;
+    overflow: auto;
+}
+
+.settings-shell {
+    display: flex;
+    width: min(900px, 100%);
+    margin: 0 auto;
+    flex-direction: column;
+    gap: 16px;
+}
+
+.settings-header {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 5px 0 11px;
+}
+
+.settings-header > span {
+    display: grid;
+    width: 46px;
+    height: 46px;
+    place-items: center;
+    border-radius: 12px;
+    background: var(--violet-soft);
+    color: var(--violet);
+    font-size: 21px;
+}
+
+.settings-header h1,
+.settings-card h2 {
+    margin: 0;
+}
+
+.settings-header h1 {
+    font-size: 22px;
+    font-weight: 570;
+}
+
+.settings-header p,
+.settings-card header p {
+    margin: 5px 0 0;
+    color: var(--text-muted);
+    font-size: 12px;
+}
+
+.settings-card {
+    overflow: hidden;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    background: rgba(18, 17, 23, 0.78);
+}
+
+.settings-card > header {
+    padding: 18px 20px;
+    border-bottom: 1px solid var(--border);
+    background: rgba(255, 255, 255, 0.012);
+}
+
+.settings-card h2 {
+    font-size: 14px;
+    font-weight: 570;
+}
+
+.settings-field {
+    display: flex;
+    min-height: 74px;
+    align-items: center;
+    justify-content: space-between;
+    gap: 26px;
+    padding: 14px 20px;
+    border-bottom: 1px solid var(--border);
+}
+
+.settings-field:last-child {
+    border-bottom: 0;
+}
+
+.settings-field > div {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+}
+
+.settings-field strong,
+.settings-footer strong {
+    font-size: 12.5px;
+    font-weight: 550;
+}
+
+.settings-field > div > span,
+.settings-footer > div > span {
+    color: var(--text-muted);
+    font-size: 10.5px;
+    line-height: 1.45;
+}
+
+.settings-number {
+    min-width: 150px;
+}
+
+.settings-number input {
+    height: 36px;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-sm);
+    background: var(--surface-raised);
+    color: var(--text-soft);
+    font-size: 11.5px;
+}
+
+.settings-options {
+    display: flex;
+    padding: 3px;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-sm);
+    background: var(--surface-raised);
+}
+
+.settings-options button {
+    min-height: 29px;
+    padding: 0 9px;
+    border: 0;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--text-muted);
+    font-size: 10.5px;
+}
+
+.settings-options button[data-active="true"] {
+    background: var(--surface-hover);
+    color: var(--violet);
+}
+
+.settings-toggle {
+    position: relative;
+    width: 42px;
+    height: 23px;
+    flex: 0 0 auto;
+}
+
+.settings-toggle input {
+    position: absolute;
+    opacity: 0;
+}
+
+.settings-toggle > span:last-child {
+    position: absolute;
+    inset: 0;
+    border: 1px solid var(--border-strong);
+    border-radius: 999px;
+    background: var(--surface-muted);
+    transition:
+        background-color 140ms ease,
+        border-color 140ms ease;
+}
+
+.settings-toggle > span:last-child::after {
+    position: absolute;
+    top: 3px;
+    left: 3px;
+    width: 15px;
+    height: 15px;
+    border-radius: 50%;
+    background: #817988;
+    content: "";
+    transition:
+        background-color 140ms ease,
+        transform 140ms ease;
+}
+
+.settings-toggle input:checked + span {
+    border-color: rgba(168, 100, 245, 0.42);
+    background: rgba(168, 100, 245, 0.22);
+}
+
+.settings-toggle input:checked + span::after {
+    background: var(--violet);
+    transform: translateX(19px);
+}
+
+.settings-toggle input:focus-visible + span {
+    outline: 2px solid rgba(168, 100, 245, 0.68);
+    outline-offset: 2px;
+}
+
+.settings-number {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.settings-number input {
+    width: 80px;
+    padding: 0 9px;
+    font-family: var(--mono);
+}
+
+.settings-number span {
+    color: var(--text-muted);
+    font-size: 10.5px;
+}
+
+.settings-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 20px;
+    padding: 15px 19px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: rgba(18, 17, 23, 0.5);
+}
+
+.settings-footer > div {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
 }
 
 .session-variables {

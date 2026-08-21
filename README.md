@@ -1,8 +1,8 @@
 # Nexora
 
 Nexora es un workspace de desarrollo backend local-first para Windows, construido con Tauri,
-React, TypeScript y Rust. Su objetivo es centralizar pruebas de APIs REST, exploración de MongoDB
-y trabajo con SQLite dentro de proyectos locales y versionables con Git.
+React, TypeScript y Rust. Su objetivo es centralizar pruebas de APIs REST y servidores locales de
+MongoDB y PostgreSQL dentro de proyectos versionables con Git.
 
 ## Estado
 
@@ -12,16 +12,20 @@ El MVP local ya conecta el frontend con el núcleo Rust. Incluye:
 - Selector inicial para abrir un proyecto `.nexora` existente o crear uno nuevo.
 - Cliente REST con ejecución HTTP real, status, headers, body, duración y tamaño de respuesta.
 - Proyectos locales `.nexora` y una petición JSON por archivo para obtener diffs claros en Git.
+- Nombres editables y guardado automático de peticiones al editar o cambiar de pestaña.
 - MongoDB local administrado por proyecto y conexión opcional a servidores externos.
 - Consulta de MongoDB, creación de colecciones e inserción, edición y borrado de documentos.
-- Inspección de esquemas SQLite y ejecución de consultas de lectura y escritura.
+- PostgreSQL 18.6 local administrado por proyecto, con esquemas, tablas y editor SQL.
 - Variables de sesión para resolver `{{referencias}}` sin guardar secretos en el proyecto.
+- Búsqueda global con `Ctrl+K` para módulos, peticiones, colecciones y tablas cargadas.
+- Ajustes locales persistentes y notificaciones Sonner para las operaciones principales.
 - Transición SilkWave durante la carga del proyecto, ajustada al tamaño de sus datos locales.
 - Diseño adaptable, navegación accesible y soporte para movimiento reducido.
 
-Las escrituras SQLite requieren confirmación. MongoDB exige filtros no vacíos para editar o borrar,
-y las URI externas solo viven durante la sesión. El núcleo limita tiempos, respuestas HTTP, filas
-SQL y documentos MongoDB para mantener estable la aplicación.
+Las escrituras PostgreSQL requieren confirmación y se validan primero dentro de una transacción de
+solo lectura. MongoDB exige filtros no vacíos para editar o borrar, y las URI externas solo viven
+durante la sesión. El núcleo limita tiempos, respuestas HTTP, filas SQL y documentos MongoDB para
+mantener estable la aplicación.
 
 Todavía no forman parte de este MVP los workflows API → diff de base de datos, la importación de
 cURL/OpenAPI/Postman, el historial persistente, índices MongoDB y la exportación CSV.
@@ -42,7 +46,7 @@ src/
 └── shared/    # componentes, servicios, hooks, estilos y tipos reutilizables
 
 src-tauri/src/
-├── commands/ # proyectos, HTTP, MongoDB y SQLite
+├── commands/ # proyectos, HTTP, MongoDB y PostgreSQL
 ├── error.rs  # errores serializables para IPC
 └── state.rs  # clientes HTTP y conexiones MongoDB en memoria
 ```
@@ -93,6 +97,23 @@ desconectar o cerrar Nexora, el proceso administrado se detiene.
 La variable `NEXORA_MONGOD_PATH` permite utilizar otro ejecutable durante desarrollo. No se debe
 versionar `mongod.exe` dentro del repositorio.
 
+## PostgreSQL local administrado
+
+Nexora utiliza el ZIP de binarios para Windows publicado por EDB y enlazado desde PostgreSQL.org.
+Busca PostgreSQL 18.6 en:
+
+```text
+%LOCALAPPDATA%\Nexora\runtimes\postgresql\18.6\pgsql\
+```
+
+No se importan archivos SQL ni bases SQLite. Al iniciar el espacio PostgreSQL, Nexora crea un
+clúster real en `.nexora/runtime/postgresql`, lo enlaza exclusivamente a `127.0.0.1` en un puerto
+libre y prepara la base `nexora`. Cada proyecto tiene una contraseña aleatoria almacenada en Windows
+Credential Manager. Los datos, logs y credenciales quedan fuera de Git.
+
+La variable `NEXORA_POSTGRESQL_HOME` permite indicar otra distribución completa durante desarrollo;
+debe apuntar a la carpeta que contiene `bin`, `lib` y `share`.
+
 ## Verificación
 
 ```bash
@@ -104,11 +125,12 @@ cargo test --manifest-path src-tauri/Cargo.toml --all-targets
 cargo build --manifest-path src-tauri/Cargo.toml --release
 ```
 
-La prueba real del runtime MongoDB es opcional porque requiere `mongod` y Windows Credential
+Las pruebas reales de los runtimes son opcionales porque requieren sus binarios y Windows Credential
 Manager:
 
 ```bash
 cargo test --manifest-path src-tauri/Cargo.toml runs_an_authenticated_project_database_end_to_end -- --ignored
+cargo test --manifest-path src-tauri/Cargo.toml runs_managed_postgresql_end_to_end -- --ignored
 ```
 
 ## Aplicación de escritorio

@@ -18,7 +18,7 @@ export function ApiSidebar({
     onSelect,
 }: ApiSidebarProps) {
     const [query, setQuery] = useState("");
-    const [expanded, setExpanded] = useState<string[]>(["users"]);
+    const [expanded, setExpanded] = useState<string[]>(["general"]);
 
     const filteredCollections = useMemo(() => {
         const normalizedQuery = query.trim().toLowerCase();

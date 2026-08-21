@@ -2,7 +2,7 @@ mod commands;
 mod error;
 mod state;
 
-use commands::{http, mongodb, mongodb_runtime, projects, sqlite};
+use commands::{http, mongodb, mongodb_runtime, postgresql, postgresql_runtime, projects};
 use state::AppState;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -31,8 +31,11 @@ pub fn run() {
             mongodb::insert_mongodb_document,
             mongodb::update_mongodb_document,
             mongodb::delete_mongodb_document,
-            sqlite::inspect_sqlite,
-            sqlite::execute_sqlite,
+            postgresql_runtime::managed_postgresql_status,
+            postgresql_runtime::start_managed_postgresql,
+            postgresql_runtime::stop_managed_postgresql,
+            postgresql::inspect_postgresql,
+            postgresql::execute_postgresql,
         ])
         .run(tauri::generate_context!())
         .expect("failed to run Nexora");
