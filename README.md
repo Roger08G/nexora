@@ -1,29 +1,68 @@
+# Nexora
 
+Nexora es un workspace de desarrollo backend local-first para Windows, construido con Tauri,
+React, TypeScript y Rust. Su objetivo es centralizar pruebas de APIs REST, exploración de MongoDB
+y trabajo con SQLite dentro de proyectos locales y versionables con Git.
 
-Como tiene que funcionar el software.
+## Estado
 
-Funcionara por proyecto es decir en la carpeta:
-C:\Users\Roger Gómez Martínez
+El frontend MVP está cerrado. Incluye:
 
-se creara .nexora
+- Shell de escritorio modular con navegación entre espacios de trabajo.
+- Cliente REST con colecciones, pestañas, editor de URL, métodos, parámetros, headers y body.
+- Vistas de exploración para MongoDB y SQLite.
+- Estados vacíos honestos, datos de muestra y controles preparados para el núcleo local.
+- Splash animado, identidad visual de Nexora y tipografía diferenciada para interfaz y datos.
+- Diseño adaptable, navegación accesible y soporte para movimiento reducido.
 
-C:\Users\Roger Gómez Martínez\.nexora
+El motor HTTP, los drivers de MongoDB y SQLite, la persistencia de proyectos y la gestión de
+secretos todavía no están conectados. La interfaz no simula ejecuciones reales.
 
-y en esa carpeta se descargara todo lo necesario para hacer correr el programa, todo vivira en .nexora/
+## Tecnologías
 
-Y para crear un proyecto se creeara projects/ dentro el nombre de cada proyecto por ejemplo, test_api, al abrir el software se podra elegir que proyecto cargar.
+- Tauri 2 y Rust.
+- React 19 y TypeScript.
+- Vite y Bun.
+- Three.js para la animación de inicio.
 
-Se puede crear un proyecto fuera de
+## Estructura
 
-C:\Users\Roger Gómez Martínez\.nexora\projects
+```text
+src/
+├── app/       # arranque, configuración y shell
+├── modules/   # API, MongoDB, SQLite y módulos auxiliares
+└── shared/    # componentes, hooks, estilos y tipos reutilizables
 
-pero tendra que tener una carpeta llamada .nexora que contiene la configuración necesaria que apunte a:
-C:\Users\Roger Gómez Martínez\.nexora
+src-tauri/   # configuración y núcleo nativo
+```
 
-por ejemplo
+Las importaciones internas utilizan el alias `@/`.
 
-C:\Users\Roger Gómez Martínez\Desktop\test_api\.nexora -> C:\Users\Roger Gómez Martínez\.nexora
+## Desarrollo
 
-entonces se podran tener proyectos donde sea pero que apunte a la ruta de descarga, así se pueden subir proyectos a git, etc...
+Requisitos: Bun y el toolchain estable de Rust.
 
+```bash
+bun install
+bun run dev
+```
 
+## Verificación
+
+```bash
+bun run fmt:check
+bun run typecheck
+bun run build
+cargo fmt --manifest-path src-tauri/Cargo.toml --check
+cargo build --manifest-path src-tauri/Cargo.toml --release
+```
+
+## Aplicación de escritorio
+
+```bash
+bun run tauri dev
+bun run tauri build
+```
+
+Nexora funciona sin cuentas, sin nube y sin telemetría. Los proyectos y sus rutas de API se
+diseñarán para permanecer en local y poder versionarse con Git sin incluir secretos.
