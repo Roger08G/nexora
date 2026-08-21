@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { NexoraMark } from "@/shared/components/brand/NexoraMark";
 import { useReducedMotion } from "@/shared/hooks/useReducedMotion";
 import "@/modules/loading/styles/loading.css";
@@ -9,65 +9,93 @@ const SilkWave = lazy(() =>
     })),
 );
 
-const BOOT_STEPS = [
-    "Preparando la interfaz",
-    "Cargando recursos visuales",
-    "Montando los espacios de trabajo",
-    "Restaurando la sesión local",
-    "Nexora está lista",
-] as const;
+const LOAD_STEPS = {
+    create: [
+        "Creando la estructura local",
+        "Preparando el proyecto",
+        "Montando los espacios de trabajo",
+        "Nexora está lista",
+    ],
+    open: [
+        "Leyendo la configuración local",
+        "Cargando peticiones y datos",
+        "Montando los espacios de trabajo",
+        "Restaurando la sesión local",
+        "Nexora está lista",
+    ],
+} as const;
+
+const EXIT_DURATION_MS = 180;
 
 type LoadingPageProps = {
+    kind: "create" | "open";
+    minimumDurationMs: number;
     onDone: () => void;
+    projectBytes: number;
+    projectName: string;
+    ready: boolean;
 };
 
-export function LoadingPage({ onDone }: LoadingPageProps) {
+export function LoadingPage({
+    kind,
+    minimumDurationMs,
+    onDone,
+    projectBytes,
+    projectName,
+    ready,
+}: LoadingPageProps) {
     const [progress, setProgress] = useState(0);
     const [isExiting, setIsExiting] = useState(false);
+    const startedAt = useRef(performance.now());
     const prefersReducedMotion = useReducedMotion();
-    const currentStep = Math.min(
-        BOOT_STEPS.length - 1,
-        Math.floor((progress / 101) * BOOT_STEPS.length),
-    );
+    const steps = LOAD_STEPS[kind];
+    const currentStep = Math.min(steps.length - 1, Math.floor((progress / 101) * steps.length));
 
     useEffect(() => {
-        let cancelled = false;
         const interval = window.setInterval(() => {
-            setProgress((value) => Math.min(92, value + 3.4));
-        }, 75);
+            const elapsed = performance.now() - startedAt.current;
+            const progressWindow = Math.max(220, minimumDurationMs - EXIT_DURATION_MS);
+            const cap = ready ? 96 : 88;
+            const nextProgress = Math.min(cap, (elapsed / progressWindow) * cap);
+            setProgress((current) => Math.max(current, nextProgress));
+        }, 45);
+
+        return () => window.clearInterval(interval);
+    }, [minimumDurationMs, ready]);
+
+    useEffect(() => {
+        if (!ready) return;
+
+        let cancelled = false;
         let minimumTimer = 0;
+        let finishTimer = 0;
+        const elapsed = performance.now() - startedAt.current;
+        const remainingBeforeExit = Math.max(0, minimumDurationMs - EXIT_DURATION_MS - elapsed);
         const minimumDisplay = new Promise<void>((resolve) => {
-            minimumTimer = window.setTimeout(resolve, 1550);
+            minimumTimer = window.setTimeout(resolve, remainingBeforeExit);
         });
         const fontsReady = document.fonts?.ready ?? Promise.resolve();
 
         void Promise.all([minimumDisplay, fontsReady]).then(() => {
-            if (!cancelled) {
-                window.clearInterval(interval);
-                setProgress(100);
-            }
+            if (cancelled) return;
+            setProgress(100);
+            setIsExiting(true);
+            finishTimer = window.setTimeout(onDone, EXIT_DURATION_MS);
         });
 
         return () => {
             cancelled = true;
-            window.clearInterval(interval);
             window.clearTimeout(minimumTimer);
-        };
-    }, []);
-
-    useEffect(() => {
-        if (progress < 100) {
-            return;
-        }
-
-        const exitTimer = window.setTimeout(() => setIsExiting(true), 420);
-        const finishTimer = window.setTimeout(onDone, 1120);
-
-        return () => {
-            window.clearTimeout(exitTimer);
             window.clearTimeout(finishTimer);
         };
-    }, [onDone, progress]);
+    }, [minimumDurationMs, onDone, ready]);
+
+    const projectSize =
+        kind === "create"
+            ? "Proyecto nuevo"
+            : projectBytes > 0
+              ? formatBytes(projectBytes)
+              : "Proyecto local";
 
     return (
         <section
@@ -75,6 +103,7 @@ export function LoadingPage({ onDone }: LoadingPageProps) {
             aria-live="polite"
             className="loading-screen"
             data-exiting={isExiting}
+            data-quick={kind === "create"}
             role="status"
         >
             {prefersReducedMotion ? (
@@ -98,14 +127,14 @@ export function LoadingPage({ onDone }: LoadingPageProps) {
                 <div className="loading-screen__hero">
                     <h1 className="loading-fade-up loading-delay-1">NEXORA</h1>
                     <p className="loading-fade-up loading-delay-2">
-                        Un solo espacio local para tus APIs y tus datos. Cliente HTTP, MongoDB y
-                        SQLite, unidos.
+                        Cargando <strong>{projectName}</strong>. Tus APIs, MongoDB y SQLite
+                        continúan completamente en local.
                     </p>
                 </div>
 
                 <footer className="loading-screen__footer loading-fade-up loading-delay-3">
                     <div className="loading-screen__progress-label">
-                        <span>{BOOT_STEPS[currentStep]}</span>
+                        <span>{steps[currentStep]}</span>
                         <span>{String(Math.round(progress)).padStart(3, "0")}%</span>
                     </div>
                     <div
@@ -123,11 +152,23 @@ export function LoadingPage({ onDone }: LoadingPageProps) {
                         </span>
                     </div>
                     <div className="loading-screen__meta">
-                        <span>v0.1.0 · desarrollo local</span>
+                        <span>{projectSize} · desarrollo local</span>
                         <span>Tauri · React · Rust</span>
                     </div>
                 </footer>
             </div>
         </section>
     );
+}
+
+function formatBytes(bytes: number) {
+    if (bytes < 1_024) return `${bytes} B`;
+    const units = ["KB", "MB", "GB", "TB"];
+    let value = bytes / 1_024;
+    let unit = units[0];
+    for (let index = 1; index < units.length && value >= 1_024; index += 1) {
+        value /= 1_024;
+        unit = units[index];
+    }
+    return `${value >= 10 ? value.toFixed(0) : value.toFixed(1)} ${unit}`;
 }

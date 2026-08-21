@@ -5,10 +5,18 @@ import type { RequestCollection, SavedRequest } from "@/modules/api/types";
 type ApiSidebarProps = {
     activeRequestId: string;
     collections: readonly RequestCollection[];
+    hasProject: boolean;
+    onCreate: () => void;
     onSelect: (request: SavedRequest) => void;
 };
 
-export function ApiSidebar({ activeRequestId, collections, onSelect }: ApiSidebarProps) {
+export function ApiSidebar({
+    activeRequestId,
+    collections,
+    hasProject,
+    onCreate,
+    onSelect,
+}: ApiSidebarProps) {
     const [query, setQuery] = useState("");
     const [expanded, setExpanded] = useState<string[]>(["users"]);
 
@@ -20,7 +28,7 @@ export function ApiSidebar({ activeRequestId, collections, onSelect }: ApiSideba
             .map((collection) => ({
                 ...collection,
                 requests: collection.requests.filter((request) =>
-                    `${request.name} ${request.path}`.toLowerCase().includes(normalizedQuery),
+                    `${request.name} ${request.url}`.toLowerCase().includes(normalizedQuery),
                 ),
             }))
             .filter((collection) => collection.requests.length > 0);
@@ -45,9 +53,9 @@ export function ApiSidebar({ activeRequestId, collections, onSelect }: ApiSideba
                     value={query}
                 />
                 <button
-                    aria-label="Nueva petición pendiente"
-                    disabled
-                    title="Persistencia pendiente"
+                    aria-label="Nueva petición"
+                    onClick={onCreate}
+                    title="Nueva petición"
                     type="button"
                 >
                     <FiPlus aria-hidden="true" />
@@ -55,7 +63,7 @@ export function ApiSidebar({ activeRequestId, collections, onSelect }: ApiSideba
             </div>
 
             <div className="module-sidebar__content">
-                <p className="eyebrow">Colecciones de muestra</p>
+                <p className="eyebrow">{hasProject ? "Peticiones del proyecto" : "Sin proyecto"}</p>
                 {filteredCollections.map((collection) => {
                     const isExpanded = expanded.includes(collection.id) || Boolean(query);
                     return (
@@ -100,7 +108,11 @@ export function ApiSidebar({ activeRequestId, collections, onSelect }: ApiSideba
                     );
                 })}
                 {filteredCollections.length === 0 ? (
-                    <p className="module-sidebar__empty">No hay peticiones que coincidan.</p>
+                    <p className="module-sidebar__empty">
+                        {query
+                            ? "No hay peticiones que coincidan."
+                            : "Crea una petición y abre un proyecto desde el pie para guardarla."}
+                    </p>
                 ) : null}
             </div>
         </aside>

@@ -3,16 +3,24 @@ import { ActionButton } from "@/shared/components/ui/ActionButton";
 
 type MongoQueryBarProps = {
     filter: string;
+    isLoading: boolean;
     limit: string;
     onFilterChange: (value: string) => void;
     onLimitChange: (value: string) => void;
+    onProjectionChange: (value: string) => void;
+    onRun: () => void;
+    projection: string;
 };
 
 export function MongoQueryBar({
     filter,
+    isLoading,
     limit,
     onFilterChange,
     onLimitChange,
+    onProjectionChange,
+    onRun,
+    projection,
 }: MongoQueryBarProps) {
     return (
         <div className="query-bar">
@@ -22,14 +30,17 @@ export function MongoQueryBar({
             </label>
             <label className="query-field">
                 <span>Project</span>
-                <input defaultValue="{ name: 1, role: 1 }" />
+                <input
+                    onChange={(event) => onProjectionChange(event.target.value)}
+                    value={projection}
+                />
             </label>
             <label className="query-field query-field--small">
                 <span>Limit</span>
                 <input onChange={(event) => onLimitChange(event.target.value)} value={limit} />
             </label>
-            <ActionButton disabled icon={FiPlay} title="Driver MongoDB pendiente" tone="primary">
-                Ejecutar
+            <ActionButton disabled={isLoading} icon={FiPlay} onClick={onRun} tone="primary">
+                {isLoading ? "Consultando" : "Ejecutar"}
             </ActionButton>
         </div>
     );

@@ -44,8 +44,8 @@ export const WORKSPACES: readonly WorkspaceDefinition[] = [
     },
     {
         id: "environments",
-        label: "Entornos",
-        description: "Variables y referencias a secretos",
+        label: "Variables de sesión",
+        description: "Valores locales no persistentes",
         accent: "neutral",
         group: "secondary",
         icon: FiLayers,

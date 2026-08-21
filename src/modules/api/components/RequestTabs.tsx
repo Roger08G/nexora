@@ -4,11 +4,18 @@ import type { SavedRequest } from "@/modules/api/types";
 type RequestTabsProps = {
     activeRequestId: string;
     onClose: (requestId: string) => void;
+    onCreate: () => void;
     onSelect: (requestId: string) => void;
     requests: SavedRequest[];
 };
 
-export function RequestTabs({ activeRequestId, onClose, onSelect, requests }: RequestTabsProps) {
+export function RequestTabs({
+    activeRequestId,
+    onClose,
+    onCreate,
+    onSelect,
+    requests,
+}: RequestTabsProps) {
     return (
         <div className="request-tabs" role="tablist">
             {requests.map((request) => (
@@ -41,10 +48,10 @@ export function RequestTabs({ activeRequestId, onClose, onSelect, requests }: Re
                 </div>
             ))}
             <button
-                aria-label="Nueva pestaña pendiente"
+                aria-label="Nueva petición"
                 className="request-tabs__new"
-                disabled
-                title="La creación persistente se conectará al proyecto local"
+                onClick={onCreate}
+                title="Nueva petición"
                 type="button"
             >
                 <FiPlus aria-hidden="true" />

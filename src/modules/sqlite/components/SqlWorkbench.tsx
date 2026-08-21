@@ -1,34 +1,51 @@
 import { FiDownload, FiPlay } from "react-icons/fi";
+import type { SqliteQueryResult } from "@/modules/sqlite/types";
 import { ActionButton } from "@/shared/components/ui/ActionButton";
 import { StatusBadge } from "@/shared/components/ui/StatusBadge";
 
 type SqlWorkbenchProps = {
+    error: string | null;
+    hasDatabase: boolean;
+    isLoading: boolean;
+    onExecute: () => void;
     onSqlChange: (sql: string) => void;
+    result: SqliteQueryResult | null;
     selectedTable: string;
     sql: string;
 };
 
-export function SqlWorkbench({ onSqlChange, selectedTable, sql }: SqlWorkbenchProps) {
+export function SqlWorkbench({
+    error,
+    hasDatabase,
+    isLoading,
+    onExecute,
+    onSqlChange,
+    result,
+    selectedTable,
+    sql,
+}: SqlWorkbenchProps) {
     return (
         <div className="module-workbench">
             <header className="workspace-heading">
                 <div>
                     <strong>Editor SQL</strong>
                     <small>·</small>
-                    <span>{selectedTable}</span>
+                    <span>{selectedTable || "sin tabla"}</span>
                 </div>
-                <StatusBadge>Solo interfaz</StatusBadge>
+                <StatusBadge tone={error ? "danger" : result ? "success" : "neutral"}>
+                    {error ? "Error" : result ? `${result.durationMs} ms` : "Preparado"}
+                </StatusBadge>
                 <div className="workspace-heading__actions">
                     <ActionButton disabled icon={FiDownload} tone="ghost">
                         Exportar CSV
                     </ActionButton>
                     <ActionButton
-                        disabled
+                        disabled={!hasDatabase || isLoading}
                         icon={FiPlay}
-                        title="Motor SQLite pendiente"
+                        onClick={onExecute}
                         tone="primary"
                     >
-                        Ejecutar
+                        {isLoading ? "Ejecutando" : "Ejecutar"}
                     </ActionButton>
                 </div>
             </header>
@@ -57,16 +74,82 @@ export function SqlWorkbench({ onSqlChange, selectedTable, sql }: SqlWorkbenchPr
                         Plan
                     </button>
                 </div>
-                <span className="panel-heading__context">Sin ejecutar</span>
+                <span className="panel-heading__context">{resultSummary(result, error)}</span>
             </div>
-            <div className="result-empty">
-                <FiPlay aria-hidden="true" />
-                <h2>Abre un archivo SQLite para ejecutar la consulta</h2>
-                <p>
-                    El frontend no modifica ni simula datos mientras el núcleo Rust no esté
-                    conectado.
-                </p>
-            </div>
+            <SqlResult error={error} hasDatabase={hasDatabase} result={result} />
         </div>
     );
+}
+
+function SqlResult({
+    error,
+    hasDatabase,
+    result,
+}: Pick<SqlWorkbenchProps, "error" | "hasDatabase" | "result">) {
+    if (error) {
+        return (
+            <div className="result-empty result-empty--error">
+                <FiPlay aria-hidden="true" />
+                <h2>No se ha podido ejecutar la consulta</h2>
+                <p>{error}</p>
+            </div>
+        );
+    }
+    if (result?.columns.length) {
+        return (
+            <div className="sql-results">
+                <table>
+                    <thead>
+                        <tr>
+                            {result.columns.map((column) => (
+                                <th key={column}>{column}</th>
+                            ))}
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {result.rows.map((row, index) => (
+                            <tr key={index}>
+                                {result.columns.map((column) => (
+                                    <td key={column}>{formatCell(row[column])}</td>
+                                ))}
+                            </tr>
+                        ))}
+                    </tbody>
+                </table>
+            </div>
+        );
+    }
+    if (result && !result.readonly) {
+        return (
+            <div className="result-empty">
+                <FiPlay aria-hidden="true" />
+                <h2>Consulta completada</h2>
+                <p>{result.affectedRows} filas afectadas.</p>
+            </div>
+        );
+    }
+    return (
+        <div className="result-empty">
+            <FiPlay aria-hidden="true" />
+            <h2>{hasDatabase ? "Lista para ejecutar" : "Abre un archivo SQLite"}</h2>
+            <p>
+                {hasDatabase
+                    ? "Escribe una única sentencia SQL. Las escrituras requieren confirmación."
+                    : "Selecciona un archivo local desde el panel lateral."}
+            </p>
+        </div>
+    );
+}
+
+function resultSummary(result: SqliteQueryResult | null, error: string | null) {
+    if (error) return error;
+    if (!result) return "Sin ejecutar";
+    if (!result.readonly) return `${result.affectedRows} filas afectadas`;
+    return `${result.rows.length} filas${result.truncated ? " · límite alcanzado" : ""}`;
+}
+
+function formatCell(value: unknown) {
+    if (value === null) return "NULL";
+    if (typeof value === "object") return JSON.stringify(value);
+    return String(value);
 }

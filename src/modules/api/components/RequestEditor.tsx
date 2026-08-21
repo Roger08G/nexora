@@ -8,8 +8,13 @@ import { ActionButton } from "@/shared/components/ui/ActionButton";
 type EditorSection = "params" | "headers" | "body" | "auth";
 
 type RequestEditorProps = {
+    canSave: boolean;
     draft: RequestDraft;
+    isSaving: boolean;
+    isSending: boolean;
     onChange: (draft: RequestDraft) => void;
+    onNameChange: (name: string) => void;
+    onSave: () => void;
     onSend: () => void;
     requestName: string;
 };
@@ -21,7 +26,17 @@ const SECTIONS: readonly { id: EditorSection; label: string }[] = [
     { id: "auth", label: "Auth" },
 ];
 
-export function RequestEditor({ draft, onChange, onSend, requestName }: RequestEditorProps) {
+export function RequestEditor({
+    canSave,
+    draft,
+    isSaving,
+    isSending,
+    onChange,
+    onNameChange,
+    onSave,
+    onSend,
+    requestName,
+}: RequestEditorProps) {
     const [activeSection, setActiveSection] = useState<EditorSection>("params");
 
     return (
@@ -38,16 +53,17 @@ export function RequestEditor({ draft, onChange, onSend, requestName }: RequestE
                     spellCheck={false}
                     value={draft.url}
                 />
-                <ActionButton icon={FiSend} onClick={onSend} tone="primary">
-                    Enviar
+                <ActionButton disabled={isSending} icon={FiSend} onClick={onSend} tone="primary">
+                    {isSending ? "Enviando" : "Enviar"}
                 </ActionButton>
                 <ActionButton
-                    disabled
+                    disabled={!canSave || isSaving}
                     icon={FiSave}
-                    title="Persistencia pendiente"
+                    onClick={onSave}
+                    title={canSave ? "Guardar en .nexora" : "Abre un proyecto para guardar"}
                     tone="secondary"
                 >
-                    Guardar
+                    {isSaving ? "Guardando" : "Guardar"}
                 </ActionButton>
             </div>
 
@@ -72,7 +88,13 @@ export function RequestEditor({ draft, onChange, onSend, requestName }: RequestE
                         </button>
                     ))}
                 </div>
-                <span className="panel-heading__context">{requestName}</span>
+                <input
+                    aria-label="Nombre de la petición"
+                    className="panel-heading__name"
+                    maxLength={120}
+                    onChange={(event) => onNameChange(event.target.value)}
+                    value={requestName}
+                />
             </div>
 
             <div className="request-editor__content">
@@ -105,9 +127,12 @@ export function RequestEditor({ draft, onChange, onSend, requestName }: RequestE
                 ) : null}
                 {activeSection === "auth" ? (
                     <div className="auth-preview">
-                        <span>Bearer token</span>
-                        <code>{"{{token}}"}</code>
-                        <p>La referencia se resolverá desde el entorno local activo.</p>
+                        <span>Autenticación por headers</span>
+                        <code>Authorization: Bearer &lt;token&gt;</code>
+                        <p>
+                            Añade el header en Headers usando una referencia como {"{{token}}"}. El
+                            valor se configura en Variables de sesión y nunca se guarda en Git.
+                        </p>
                     </div>
                 ) : null}
             </div>

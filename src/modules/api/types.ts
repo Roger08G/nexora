@@ -1,5 +1,15 @@
 export type HttpMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "HEAD" | "OPTIONS";
 
+export const HTTP_METHODS: readonly HttpMethod[] = [
+    "GET",
+    "POST",
+    "PUT",
+    "PATCH",
+    "DELETE",
+    "HEAD",
+    "OPTIONS",
+];
+
 export type KeyValueItem = {
     id: string;
     enabled: boolean;
@@ -10,10 +20,13 @@ export type KeyValueItem = {
 export type SavedRequest = {
     id: string;
     collectionId: string;
+    collectionName: string;
     name: string;
     method: HttpMethod;
-    path: string;
-    body?: string;
+    url: string;
+    params: KeyValueItem[];
+    headers: KeyValueItem[];
+    body: string;
 };
 
 export type RequestCollection = {
@@ -30,4 +43,17 @@ export type RequestDraft = {
     body: string;
 };
 
-export type ResponseState = "idle" | "backend-required";
+export type HttpResponse = {
+    body: string;
+    durationMs: number;
+    headers: { key: string; value: string }[];
+    sizeBytes: number;
+    status: number;
+    statusText: string;
+};
+
+export type ResponseState =
+    | { status: "idle" }
+    | { status: "loading" }
+    | { status: "success"; response: HttpResponse }
+    | { status: "error"; message: string };

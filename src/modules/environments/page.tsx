@@ -1,12 +1,17 @@
-import { FiLayers } from "react-icons/fi";
-import { ModulePlaceholder } from "@/shared/components/ui/ModulePlaceholder";
+import { useSessionVariables } from "@/app/providers/SessionVariablesProvider";
+import { SessionVariablesEditor } from "@/modules/environments/components/SessionVariablesEditor";
 
 export function EnvironmentsPage() {
+    const { addVariable, removeVariable, updateVariable, variables } = useSessionVariables();
+
     return (
-        <ModulePlaceholder
-            description="Las variables versionables vivirán en el proyecto y los valores sensibles se resolverán desde el almacén seguro del sistema."
-            icon={FiLayers}
-            title="Entornos"
-        />
+        <section className="module-page variables-page">
+            <SessionVariablesEditor
+                onAdd={addVariable}
+                onRemove={removeVariable}
+                onUpdate={updateVariable}
+                variables={variables}
+            />
+        </section>
     );
 }

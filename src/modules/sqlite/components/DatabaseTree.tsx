@@ -1,15 +1,17 @@
 import { useState } from "react";
-import { FiChevronRight, FiColumns, FiHardDrive, FiKey, FiTable } from "react-icons/fi";
-import type { DemoTable } from "@/modules/sqlite/data/sqlite.fixtures";
+import { FiChevronRight, FiColumns, FiFolder, FiHardDrive, FiKey, FiTable } from "react-icons/fi";
+import type { SqliteDatabase } from "@/modules/sqlite/types";
 
 type DatabaseTreeProps = {
+    database: SqliteDatabase | null;
+    onOpen: () => void;
     onSelect: (tableName: string) => void;
     selectedTable: string;
-    tables: readonly DemoTable[];
 };
 
-export function DatabaseTree({ onSelect, selectedTable, tables }: DatabaseTreeProps) {
+export function DatabaseTree({ database, onOpen, onSelect, selectedTable }: DatabaseTreeProps) {
     const [expanded, setExpanded] = useState<string[]>([selectedTable]);
+    const tables = database?.tables ?? [];
 
     return (
         <aside className="module-sidebar sqlite-sidebar">
@@ -18,12 +20,15 @@ export function DatabaseTree({ onSelect, selectedTable, tables }: DatabaseTreePr
                     <FiHardDrive aria-hidden="true" />
                 </span>
                 <div>
-                    <strong>Sin archivo abierto</strong>
-                    <small>SQLite · estructura de muestra</small>
+                    <strong>{database?.name ?? "Sin archivo abierto"}</strong>
+                    <small>{database?.path ?? "SQLite local"}</small>
                 </div>
+                <button aria-label="Abrir archivo SQLite" onClick={onOpen} type="button">
+                    <FiFolder aria-hidden="true" />
+                </button>
             </div>
             <div className="module-sidebar__content">
-                <p className="eyebrow">Tablas de muestra</p>
+                <p className="eyebrow">{database ? "Tablas" : "Base de datos"}</p>
                 {tables.map((table) => {
                     const isExpanded = expanded.includes(table.name);
                     return (
@@ -45,19 +50,18 @@ export function DatabaseTree({ onSelect, selectedTable, tables }: DatabaseTreePr
                                 <FiChevronRight aria-hidden="true" data-expanded={isExpanded} />
                                 <FiTable aria-hidden="true" />
                                 <span>{table.name}</span>
-                                <small>{table.rows}</small>
                             </button>
                             {isExpanded ? (
                                 <ul className="column-list">
                                     {table.columns.map((column) => (
                                         <li key={column.name}>
-                                            {column.primary ? (
+                                            {column.primaryKey ? (
                                                 <FiKey aria-hidden="true" />
                                             ) : (
                                                 <FiColumns aria-hidden="true" />
                                             )}
                                             <span>{column.name}</span>
-                                            <small>{column.type}</small>
+                                            <small>{column.dataType || "ANY"}</small>
                                         </li>
                                     ))}
                                 </ul>
@@ -65,6 +69,11 @@ export function DatabaseTree({ onSelect, selectedTable, tables }: DatabaseTreePr
                         </section>
                     );
                 })}
+                {!database ? (
+                    <p className="module-sidebar__empty">
+                        Abre un archivo .sqlite, .sqlite3 o .db para inspeccionar sus tablas.
+                    </p>
+                ) : null}
             </div>
         </aside>
     );

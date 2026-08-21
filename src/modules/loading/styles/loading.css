@@ -4,7 +4,7 @@
     inset: 0;
     overflow: hidden;
     background: #08080b;
-    transition: opacity 700ms ease-out, filter 700ms ease-out, transform 700ms ease-out;
+    transition: opacity 180ms ease-out, filter 180ms ease-out, transform 180ms ease-out;
 }
 
 .loading-screen[data-exiting="true"] {
@@ -95,6 +95,11 @@
     line-height: 1.65;
 }
 
+.loading-screen__hero strong {
+    color: #e8e3ee;
+    font-weight: 520;
+}
+
 .loading-screen__footer {
     width: min(520px, 100%);
 }
@@ -170,6 +175,22 @@
 
 .loading-delay-3 {
     animation-delay: 380ms;
+}
+
+.loading-screen[data-quick="true"] .loading-fade-up {
+    animation-duration: 170ms;
+}
+
+.loading-screen[data-quick="true"] .loading-delay-1 {
+    animation-delay: 30ms;
+}
+
+.loading-screen[data-quick="true"] .loading-delay-2 {
+    animation-delay: 65ms;
+}
+
+.loading-screen[data-quick="true"] .loading-delay-3 {
+    animation-delay: 95ms;
 }
 
 @keyframes loading-fade-up {

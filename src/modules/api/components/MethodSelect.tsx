@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { FiChevronDown } from "react-icons/fi";
-import { HTTP_METHODS } from "@/modules/api/data/api.fixtures";
+import { HTTP_METHODS } from "@/modules/api/types";
 import type { HttpMethod } from "@/modules/api/types";
 
 type MethodSelectProps = {
