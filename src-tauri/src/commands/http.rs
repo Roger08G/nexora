@@ -325,4 +325,323 @@ mod tests {
         server.join().unwrap();
         assert_eq!(response.status, 204);
     }
+
+    #[test]
+    #[ignore = "requires the temporary Nexora TypeScript QA API"]
+    fn exercises_external_typescript_api_end_to_end() {
+        let base_url = std::env::var("NEXORA_E2E_BASE_URL").expect("NEXORA_E2E_BASE_URL");
+        let pass = std::env::var("NEXORA_E2E_PASS").unwrap_or_else(|_| "manual".into());
+        let runtime = tauri::async_runtime::TokioRuntime::new().expect("runtime");
+
+        runtime.block_on(async {
+            let expected_statuses = [
+                ("GET", 200),
+                ("POST", 201),
+                ("PUT", 200),
+                ("PATCH", 200),
+                ("DELETE", 200),
+                ("HEAD", 200),
+                ("OPTIONS", 204),
+            ];
+
+            for (method, expected_status) in expected_statuses {
+                let body = if matches!(method, "POST" | "PUT" | "PATCH") {
+                    r#"{"pass":"{{pass}}","method":"{{methodPath}}"}"#.into()
+                } else {
+                    String::new()
+                };
+                let response = execute(
+                    &reqwest::Client::new(),
+                    qa_request(
+                        method,
+                        "{{baseUrl}}/method/{{methodPath}}",
+                        body,
+                        HashMap::from([
+                            ("baseUrl".into(), base_url.clone()),
+                            ("delay".into(), "30".into()),
+                            ("headerName".into(), "Nexora-QA".into()),
+                            ("headerValue".into(), format!("qa-header-{pass}")),
+                            ("methodPath".into(), method.into()),
+                            ("pass".into(), pass.clone()),
+                            ("queryName".into(), "qa".into()),
+                        ]),
+                    ),
+                )
+                .await
+                .unwrap_or_else(|error| panic!("{method} failed: {error}"));
+
+                assert_eq!(response.status, expected_status, "{method} status");
+                assert!(response.duration_ms >= 20, "{method} duration too short");
+                assert!(response.duration_ms < 5_000, "{method} duration too long");
+                assert_eq!(response_header(&response, "x-nexora-method"), Some(method));
+                assert_eq!(
+                    response_header(&response, "x-nexora-pass"),
+                    Some(pass.as_str())
+                );
+                assert_eq!(
+                    response_header(&response, "x-nexora-query-value"),
+                    Some(pass.as_str())
+                );
+                assert_eq!(
+                    response_header(&response, "x-nexora-request-header"),
+                    Some(format!("qa-header-{pass}").as_str())
+                );
+                assert!(response_header(&response, "allow").is_some());
+
+                if matches!(method, "HEAD" | "OPTIONS") {
+                    assert_eq!(response.size_bytes, 0, "{method} response body");
+                } else {
+                    let json: serde_json::Value =
+                        serde_json::from_str(&response.body).expect("JSON method response");
+                    assert_eq!(json["method"], method);
+                    assert_eq!(json["pass"], pass);
+                    assert_eq!(json["query"], pass);
+                    assert_eq!(json["header"], format!("qa-header-{pass}"));
+                    if matches!(method, "POST" | "PUT" | "PATCH") {
+                        assert_eq!(json["body"]["pass"], pass);
+                        assert_eq!(json["body"]["method"], method);
+                    }
+                }
+            }
+
+            let item_id = format!("item-{pass}");
+            let created = execute(
+                &reqwest::Client::new(),
+                qa_request(
+                    "POST",
+                    "{{baseUrl}}/items",
+                    r#"{"id":"{{itemId}}","name":"created","pass":"{{pass}}"}"#.into(),
+                    qa_variables(&base_url, &pass, &item_id),
+                ),
+            )
+            .await
+            .expect("create item");
+            assert_eq!(created.status, 201);
+            assert_eq!(
+                response_header(&created, "location"),
+                Some(format!("/items/{item_id}").as_str())
+            );
+
+            let fetched = execute(
+                &reqwest::Client::new(),
+                qa_request(
+                    "GET",
+                    "{{baseUrl}}/items/{{itemId}}",
+                    String::new(),
+                    qa_variables(&base_url, &pass, &item_id),
+                ),
+            )
+            .await
+            .expect("fetch item");
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(&fetched.body).unwrap()["name"],
+                "created"
+            );
+
+            let replaced = execute(
+                &reqwest::Client::new(),
+                qa_request(
+                    "PUT",
+                    "{{baseUrl}}/items/{{itemId}}",
+                    r#"{"name":"replaced","pass":"{{pass}}"}"#.into(),
+                    qa_variables(&base_url, &pass, &item_id),
+                ),
+            )
+            .await
+            .expect("replace item");
+            let replaced: serde_json::Value = serde_json::from_str(&replaced.body).unwrap();
+            assert_eq!(replaced["name"], "replaced");
+            assert_eq!(replaced["version"], 2);
+
+            let patched = execute(
+                &reqwest::Client::new(),
+                qa_request(
+                    "PATCH",
+                    "{{baseUrl}}/items/{{itemId}}",
+                    r#"{"name":"patched"}"#.into(),
+                    qa_variables(&base_url, &pass, &item_id),
+                ),
+            )
+            .await
+            .expect("patch item");
+            let patched: serde_json::Value = serde_json::from_str(&patched.body).unwrap();
+            assert_eq!(patched["name"], "patched");
+            assert_eq!(patched["version"], 3);
+
+            let head = execute(
+                &reqwest::Client::new(),
+                qa_request(
+                    "HEAD",
+                    "{{baseUrl}}/items/{{itemId}}",
+                    String::new(),
+                    qa_variables(&base_url, &pass, &item_id),
+                ),
+            )
+            .await
+            .expect("head item");
+            assert_eq!(head.status, 200);
+            assert_eq!(head.size_bytes, 0);
+
+            let deleted = execute(
+                &reqwest::Client::new(),
+                qa_request(
+                    "DELETE",
+                    "{{baseUrl}}/items/{{itemId}}",
+                    String::new(),
+                    qa_variables(&base_url, &pass, &item_id),
+                ),
+            )
+            .await
+            .expect("delete item");
+            assert_eq!(deleted.status, 204);
+
+            let missing = execute(
+                &reqwest::Client::new(),
+                qa_request(
+                    "GET",
+                    "{{baseUrl}}/items/{{itemId}}",
+                    String::new(),
+                    qa_variables(&base_url, &pass, &item_id),
+                ),
+            )
+            .await
+            .expect("missing item response");
+            assert_eq!(missing.status, 404);
+
+            let teapot = execute(
+                &reqwest::Client::new(),
+                qa_request(
+                    "GET",
+                    "{{baseUrl}}/status/418",
+                    String::new(),
+                    qa_variables(&base_url, &pass, &item_id),
+                ),
+            )
+            .await
+            .expect("teapot response");
+            assert_eq!(teapot.status, 418);
+            assert_eq!(teapot.status_text, "I'm a teapot");
+
+            let redirected = execute(
+                &reqwest::Client::new(),
+                qa_request(
+                    "GET",
+                    "{{baseUrl}}/redirect",
+                    String::new(),
+                    qa_variables(&base_url, &pass, &item_id),
+                ),
+            )
+            .await
+            .expect("redirect response");
+            assert_eq!(redirected.status, 200);
+
+            let timed_out = execute(
+                &reqwest::Client::new(),
+                HttpRequestInput {
+                    timeout_ms: Some(1_000),
+                    ..qa_request(
+                        "GET",
+                        "{{baseUrl}}/slow/1250",
+                        String::new(),
+                        qa_variables(&base_url, &pass, &item_id),
+                    )
+                },
+            )
+            .await;
+            assert!(timed_out.is_err(), "slow request should time out");
+
+            let oversized = execute(
+                &reqwest::Client::new(),
+                qa_request(
+                    "GET",
+                    "{{baseUrl}}/large/10486784",
+                    String::new(),
+                    qa_variables(&base_url, &pass, &item_id),
+                ),
+            )
+            .await;
+            assert!(oversized.is_err(), "oversized response should be rejected");
+
+            let unresolved = execute(
+                &reqwest::Client::new(),
+                qa_request(
+                    "GET",
+                    "{{missingBaseUrl}}/health",
+                    String::new(),
+                    HashMap::new(),
+                ),
+            )
+            .await;
+            assert!(unresolved.is_err(), "missing variables should be rejected");
+        });
+    }
+
+    fn qa_request(
+        method: &str,
+        url: &str,
+        body: String,
+        variables: HashMap<String, String>,
+    ) -> HttpRequestInput {
+        HttpRequestInput {
+            method: method.into(),
+            url: url.into(),
+            params: vec![
+                crate::commands::projects::KeyValueItem {
+                    id: "pass".into(),
+                    enabled: true,
+                    key: "pass".into(),
+                    value: "{{pass}}".into(),
+                },
+                crate::commands::projects::KeyValueItem {
+                    id: "qa".into(),
+                    enabled: true,
+                    key: "{{queryName}}".into(),
+                    value: "{{pass}}".into(),
+                },
+                crate::commands::projects::KeyValueItem {
+                    id: "delay".into(),
+                    enabled: true,
+                    key: "delay".into(),
+                    value: "{{delay}}".into(),
+                },
+            ],
+            headers: vec![
+                crate::commands::projects::KeyValueItem {
+                    id: "content-type".into(),
+                    enabled: true,
+                    key: "Content-Type".into(),
+                    value: "application/json".into(),
+                },
+                crate::commands::projects::KeyValueItem {
+                    id: "qa-header".into(),
+                    enabled: true,
+                    key: "X-{{headerName}}".into(),
+                    value: "{{headerValue}}".into(),
+                },
+            ],
+            body,
+            timeout_ms: Some(5_000),
+            variables,
+        }
+    }
+
+    fn qa_variables(base_url: &str, pass: &str, item_id: &str) -> HashMap<String, String> {
+        HashMap::from([
+            ("baseUrl".into(), base_url.into()),
+            ("delay".into(), "0".into()),
+            ("headerName".into(), "Nexora-QA".into()),
+            ("headerValue".into(), format!("qa-header-{pass}")),
+            ("itemId".into(), item_id.into()),
+            ("pass".into(), pass.into()),
+            ("queryName".into(), "qa".into()),
+        ])
+    }
+
+    fn response_header<'a>(response: &'a super::HttpResponseOutput, name: &str) -> Option<&'a str> {
+        response
+            .headers
+            .iter()
+            .find(|header| header.key.eq_ignore_ascii_case(name))
+            .map(|header| header.value.as_str())
+    }
 }

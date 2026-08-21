@@ -698,7 +698,7 @@ mod tests {
             let blocked = crate::commands::postgresql::execute_internal(
                 &state,
                 &connection.connection_id,
-                "CREATE TABLE runtime_test (id integer PRIMARY KEY, working boolean NOT NULL)",
+                "CREATE TABLE runtime_test (id integer PRIMARY KEY, name text NOT NULL, working boolean NOT NULL)",
                 false,
                 None,
             )
@@ -707,7 +707,7 @@ mod tests {
             crate::commands::postgresql::execute_internal(
                 &state,
                 &connection.connection_id,
-                "CREATE TABLE runtime_test (id integer PRIMARY KEY, working boolean NOT NULL)",
+                "CREATE TABLE runtime_test (id integer PRIMARY KEY, name text NOT NULL, working boolean NOT NULL)",
                 true,
                 None,
             )
@@ -715,7 +715,24 @@ mod tests {
             crate::commands::postgresql::execute_internal(
                 &state,
                 &connection.connection_id,
-                "INSERT INTO runtime_test VALUES (1, true)",
+                "INSERT INTO runtime_test VALUES (1, 'first', true), (2, 'second', true)",
+                true,
+                None,
+            )
+            .await?;
+            let blocked_update = crate::commands::postgresql::execute_internal(
+                &state,
+                &connection.connection_id,
+                "UPDATE runtime_test SET working = false WHERE id = 1",
+                false,
+                None,
+            )
+            .await;
+            assert!(matches!(blocked_update, Err(AppError::Validation(_))));
+            crate::commands::postgresql::execute_internal(
+                &state,
+                &connection.connection_id,
+                "UPDATE runtime_test SET name = 'updated', working = false WHERE id = 1",
                 true,
                 None,
             )
@@ -727,14 +744,41 @@ mod tests {
             let query = crate::commands::postgresql::execute_internal(
                 &state,
                 &connection.connection_id,
-                "SELECT working FROM runtime_test WHERE id = 1",
+                "SELECT id, name, working FROM runtime_test ORDER BY id",
+                false,
+                Some(1),
+            )
+            .await?;
+            let query = serde_json::to_value(query)?;
+            let blocked_delete = crate::commands::postgresql::execute_internal(
+                &state,
+                &connection.connection_id,
+                "DELETE FROM runtime_test WHERE id = 2",
+                false,
+                None,
+            )
+            .await;
+            assert!(matches!(blocked_delete, Err(AppError::Validation(_))));
+            let deleted = crate::commands::postgresql::execute_internal(
+                &state,
+                &connection.connection_id,
+                "DELETE FROM runtime_test WHERE id = 2",
+                true,
+                None,
+            )
+            .await?;
+            let deleted = serde_json::to_value(deleted)?;
+            let remaining = crate::commands::postgresql::execute_internal(
+                &state,
+                &connection.connection_id,
+                "SELECT count(*) AS total FROM runtime_test",
                 false,
                 None,
             )
             .await?;
-            let query = serde_json::to_value(query)?;
+            let remaining = serde_json::to_value(remaining)?;
             stop_managed_internal(&state).await?;
-            Ok::<_, AppError>((connection.port, database, query))
+            Ok::<_, AppError>((connection.port, database, query, deleted, remaining))
         });
 
         let _ = tauri::async_runtime::block_on(stop_managed_internal(&state));
@@ -743,10 +787,23 @@ mod tests {
         }
         fs::remove_dir_all(&root).expect("remove temporary project");
 
-        let (port, database, query) = result.expect("managed PostgreSQL lifecycle");
+        let (port, database, query, deleted, remaining) =
+            result.expect("managed PostgreSQL lifecycle");
         assert_eq!(database["schemas"][0]["name"], "public");
         assert_eq!(database["schemas"][0]["tables"][0]["name"], "runtime_test");
-        assert_eq!(query["rows"][0]["working"], true);
+        assert_eq!(
+            database["schemas"][0]["tables"][0]["columns"][0]["name"],
+            "id"
+        );
+        assert_eq!(
+            database["schemas"][0]["tables"][0]["columns"][0]["primaryKey"],
+            true
+        );
+        assert_eq!(query["rows"][0]["name"], "updated");
+        assert_eq!(query["rows"][0]["working"], false);
+        assert_eq!(query["truncated"], true);
+        assert_eq!(deleted["affectedRows"], 1);
+        assert_eq!(remaining["rows"][0]["total"], 1);
         assert!(TcpStream::connect(("127.0.0.1", port)).is_err());
     }
 }

@@ -485,18 +485,39 @@ mod tests {
                 .get(&connection.connection_id)
                 .cloned()
                 .ok_or_else(|| AppError::NotFound("MongoDB test connection".into()))?;
-            let collection = client
-                .database("nexora_runtime_test")
-                .collection::<Document>("documents");
+            let database = client.database("nexora_runtime_test");
+            database.create_collection("documents").await?;
+            let collection = database.collection::<Document>("documents");
             collection
-                .insert_one(doc! { "name": "managed", "working": true })
+                .insert_one(doc! { "name": "managed", "working": true, "rank": 1 })
                 .await?;
-            let document = collection
+            collection
+                .insert_one(doc! { "name": "temporary", "working": true, "rank": 2 })
+                .await?;
+            let databases = client.list_database_names().await?;
+            let collections = database.list_collection_names().await?;
+            let update = collection
+                .update_one(
+                    doc! { "name": "managed" },
+                    doc! { "$set": { "working": false, "updated": true } },
+                )
+                .await?;
+            let updated = collection
                 .find_one(doc! { "name": "managed" })
                 .await?
                 .ok_or_else(|| AppError::NotFound("MongoDB test document".into()))?;
+            let deleted = collection.delete_one(doc! { "name": "temporary" }).await?;
+            let remaining = collection.count_documents(doc! {}).await?;
             stop_managed_internal(&state).await?;
-            Ok::<_, AppError>((connection.port, document))
+            Ok::<_, AppError>((
+                connection.port,
+                databases,
+                collections,
+                update,
+                updated,
+                deleted,
+                remaining,
+            ))
         });
 
         let _ = tauri::async_runtime::block_on(stop_managed_internal(&state));
@@ -505,8 +526,16 @@ mod tests {
         }
         fs::remove_dir_all(&root).expect("remove temporary project");
 
-        let (port, document) = result.expect("managed MongoDB lifecycle");
-        assert_eq!(document.get_bool("working"), Ok(true));
+        let (port, databases, collections, update, updated, deleted, remaining) =
+            result.expect("managed MongoDB lifecycle");
+        assert!(databases.iter().any(|name| name == "nexora_runtime_test"));
+        assert!(collections.iter().any(|name| name == "documents"));
+        assert_eq!(update.matched_count, 1);
+        assert_eq!(update.modified_count, 1);
+        assert_eq!(updated.get_bool("working"), Ok(false));
+        assert_eq!(updated.get_bool("updated"), Ok(true));
+        assert_eq!(deleted.deleted_count, 1);
+        assert_eq!(remaining, 1);
         assert!(TcpStream::connect(("127.0.0.1", port)).is_err());
     }
 }
