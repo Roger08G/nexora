@@ -57,6 +57,13 @@ pub struct SavedRequest {
     pub body: String,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RequestFolder {
+    pub id: String,
+    pub name: String,
+}
+
 #[tauri::command]
 pub async fn create_project(root: String, name: String) -> CommandResult<ProjectSummary> {
     tauri::async_runtime::spawn_blocking(move || create_project_sync(&root, &name))
@@ -82,6 +89,25 @@ pub async fn list_requests(project_root: String) -> CommandResult<Vec<SavedReque
 }
 
 #[tauri::command]
+pub async fn list_request_folders(project_root: String) -> CommandResult<Vec<RequestFolder>> {
+    tauri::async_runtime::spawn_blocking(move || list_request_folders_sync(&project_root))
+        .await
+        .map_err(|error| AppError::Internal(error.to_string()))?
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+pub async fn create_request_folder(
+    project_root: String,
+    name: String,
+) -> CommandResult<RequestFolder> {
+    tauri::async_runtime::spawn_blocking(move || create_request_folder_sync(&project_root, &name))
+        .await
+        .map_err(|error| AppError::Internal(error.to_string()))?
+        .map_err(Into::into)
+}
+
+#[tauri::command]
 pub async fn save_request(
     project_root: String,
     request: SavedRequest,
@@ -99,17 +125,7 @@ pub async fn delete_request(
     request_id: String,
 ) -> CommandResult<()> {
     tauri::async_runtime::spawn_blocking(move || {
-        let root = validated_project_root(&project_root)?;
-        validate_slug("colección", &collection_id)?;
-        validate_slug("petición", &request_id)?;
-        let path = requests_dir(&root)
-            .join(collection_id)
-            .join(format!("{request_id}.json"));
-        if !path.is_file() {
-            return Err(AppError::NotFound("La petición no existe".into()));
-        }
-        fs::remove_file(path)?;
-        Ok(())
+        delete_request_sync(&project_root, &collection_id, &request_id)
     })
     .await
     .map_err(|error| AppError::Internal(error.to_string()))?
@@ -134,12 +150,20 @@ pub(crate) fn create_project_sync(root: &str, name: &str) -> Result<ProjectSumma
 
     fs::create_dir(&project_dir)?;
     fs::create_dir(project_dir.join("requests"))?;
+    fs::create_dir(project_dir.join("folders"))?;
     let manifest = ProjectManifest {
         id: uuid::Uuid::new_v4().to_string(),
         schema_version: SCHEMA_VERSION,
         name: name.to_owned(),
     };
     write_json_atomic(&project_dir.join("project.json"), &manifest)?;
+    write_json_atomic(
+        &project_dir.join("folders/general.json"),
+        &RequestFolder {
+            id: "general".into(),
+            name: "General".into(),
+        },
+    )?;
     ensure_runtime_ignored(&root)?;
 
     summary(&root, manifest)
@@ -147,33 +171,14 @@ pub(crate) fn create_project_sync(root: &str, name: &str) -> Result<ProjectSumma
 
 fn open_project_sync(root: &str) -> Result<ProjectSummary, AppError> {
     let (root, manifest) = validated_project(root)?;
+    ensure_request_folders(&root)?;
     ensure_runtime_ignored(&root)?;
     summary(&root, manifest)
 }
 
 fn list_requests_sync(project_root: &str) -> Result<Vec<SavedRequest>, AppError> {
     let root = validated_project_root(project_root)?;
-    let directory = requests_dir(&root);
-    fs::create_dir_all(&directory)?;
-
-    let mut requests = Vec::new();
-    for collection in fs::read_dir(directory)? {
-        let collection = collection?;
-        if !collection.file_type()?.is_dir() {
-            continue;
-        }
-        for entry in fs::read_dir(collection.path())? {
-            let entry = entry?;
-            if !entry.file_type()?.is_file()
-                || entry.path().extension().and_then(|value| value.to_str()) != Some("json")
-            {
-                continue;
-            }
-            let request: SavedRequest = serde_json::from_slice(&fs::read(entry.path())?)?;
-            validate_request(&request)?;
-            requests.push(request);
-        }
-    }
+    let mut requests = list_requests_from_root(&root)?;
     requests.sort_by(|left, right| {
         left.collection_name
             .to_lowercase()
@@ -181,6 +186,46 @@ fn list_requests_sync(project_root: &str) -> Result<Vec<SavedRequest>, AppError>
             .then_with(|| left.name.to_lowercase().cmp(&right.name.to_lowercase()))
     });
     Ok(requests)
+}
+
+fn list_request_folders_sync(project_root: &str) -> Result<Vec<RequestFolder>, AppError> {
+    let root = validated_project_root(project_root)?;
+    ensure_request_folders(&root)?;
+    let mut folders = Vec::new();
+    for entry in fs::read_dir(folders_dir(&root))? {
+        let entry = entry?;
+        if !entry.file_type()?.is_file()
+            || entry.path().extension().and_then(|value| value.to_str()) != Some("json")
+        {
+            continue;
+        }
+        let folder: RequestFolder = serde_json::from_slice(&fs::read(entry.path())?)?;
+        validate_request_folder(&folder)?;
+        folders.push(folder);
+    }
+    folders.sort_by_key(|folder| folder.name.to_lowercase());
+    Ok(folders)
+}
+
+fn create_request_folder_sync(project_root: &str, name: &str) -> Result<RequestFolder, AppError> {
+    let root = validated_project_root(project_root)?;
+    ensure_request_folders(&root)?;
+    let name = validated_folder_name(name)?;
+    let normalized_name = name.to_lowercase();
+    if list_request_folders_sync(project_root)?
+        .iter()
+        .any(|folder| folder.name.to_lowercase() == normalized_name)
+    {
+        return Err(AppError::Conflict(
+            "Ya existe una carpeta con ese nombre".into(),
+        ));
+    }
+    let folder = RequestFolder {
+        id: format!("folder-{}", uuid::Uuid::new_v4()),
+        name,
+    };
+    write_request_folder(&root, &folder)?;
+    Ok(folder)
 }
 
 fn save_request_sync(
@@ -193,11 +238,119 @@ fn save_request_sync(
     request.method = request.method.to_uppercase();
     validate_request(&request)?;
 
+    let folder = ensure_request_folder(&root, &request.collection_id, &request.collection_name)?;
+    request.collection_name = folder.name;
+
     let directory = requests_dir(&root).join(&request.collection_id);
     fs::create_dir_all(&directory)?;
     let path = directory.join(format!("{}.json", request.id));
     write_json_atomic(&path, &request)?;
     Ok(request)
+}
+
+fn delete_request_sync(
+    project_root: &str,
+    collection_id: &str,
+    request_id: &str,
+) -> Result<(), AppError> {
+    let root = validated_project_root(project_root)?;
+    validate_slug("carpeta", collection_id)?;
+    validate_slug("petición", request_id)?;
+    let path = requests_dir(&root)
+        .join(collection_id)
+        .join(format!("{request_id}.json"));
+    if !path.is_file() {
+        return Err(AppError::NotFound("La petición no existe".into()));
+    }
+    fs::remove_file(path)?;
+    Ok(())
+}
+
+fn ensure_request_folders(root: &Path) -> Result<(), AppError> {
+    fs::create_dir_all(requests_dir(root))?;
+    fs::create_dir_all(folders_dir(root))?;
+    let requests = list_requests_from_root(root)?;
+    for request in requests {
+        ensure_request_folder(root, &request.collection_id, &request.collection_name)?;
+    }
+    if fs::read_dir(folders_dir(root))?.next().is_none() {
+        write_request_folder(
+            root,
+            &RequestFolder {
+                id: "general".into(),
+                name: "General".into(),
+            },
+        )?;
+    }
+    Ok(())
+}
+
+fn list_requests_from_root(root: &Path) -> Result<Vec<SavedRequest>, AppError> {
+    let directory = requests_dir(root);
+    fs::create_dir_all(&directory)?;
+    let mut requests = Vec::new();
+    for folder in fs::read_dir(directory)? {
+        let folder = folder?;
+        if !folder.file_type()?.is_dir() {
+            continue;
+        }
+        for entry in fs::read_dir(folder.path())? {
+            let entry = entry?;
+            if !entry.file_type()?.is_file()
+                || entry.path().extension().and_then(|value| value.to_str()) != Some("json")
+            {
+                continue;
+            }
+            let request: SavedRequest = serde_json::from_slice(&fs::read(entry.path())?)?;
+            validate_request(&request)?;
+            requests.push(request);
+        }
+    }
+    Ok(requests)
+}
+
+fn ensure_request_folder(
+    root: &Path,
+    id: &str,
+    fallback_name: &str,
+) -> Result<RequestFolder, AppError> {
+    validate_slug("carpeta", id)?;
+    let path = folders_dir(root).join(format!("{id}.json"));
+    if path.is_file() {
+        let folder: RequestFolder = serde_json::from_slice(&fs::read(path)?)?;
+        validate_request_folder(&folder)?;
+        return Ok(folder);
+    }
+    let folder = RequestFolder {
+        id: id.into(),
+        name: validated_folder_name(fallback_name)?,
+    };
+    write_request_folder(root, &folder)?;
+    Ok(folder)
+}
+
+fn write_request_folder(root: &Path, folder: &RequestFolder) -> Result<(), AppError> {
+    validate_request_folder(folder)?;
+    fs::create_dir_all(folders_dir(root))?;
+    write_json_atomic(
+        &folders_dir(root).join(format!("{}.json", folder.id)),
+        folder,
+    )
+}
+
+fn validate_request_folder(folder: &RequestFolder) -> Result<(), AppError> {
+    validate_slug("carpeta", &folder.id)?;
+    validated_folder_name(&folder.name).map(|_| ())
+}
+
+fn validated_folder_name(name: &str) -> Result<String, AppError> {
+    let name = name.trim();
+    if name.is_empty() || name.chars().count() > 80 {
+        return Err(AppError::Validation(
+            "El nombre de la carpeta debe tener entre 1 y 80 caracteres".into(),
+        ));
+    }
+    Ok(name.into())
 }
 
 fn validate_request(request: &SavedRequest) -> Result<(), AppError> {
@@ -357,6 +510,10 @@ fn requests_dir(root: &Path) -> PathBuf {
     root.join(PROJECT_DIR).join("requests")
 }
 
+fn folders_dir(root: &Path) -> PathBuf {
+    root.join(PROJECT_DIR).join("folders")
+}
+
 fn summary(root: &Path, manifest: ProjectManifest) -> Result<ProjectSummary, AppError> {
     let metrics = project_metrics(root)?;
     Ok(ProjectSummary {
@@ -453,7 +610,9 @@ fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<(), AppErro
 #[cfg(test)]
 mod tests {
     use super::{
-        create_project_sync, list_requests_sync, open_project_sync, save_request_sync, SavedRequest,
+        create_project_sync, create_request_folder_sync, delete_request_sync,
+        list_request_folders_sync, list_requests_sync, open_project_sync, save_request_sync,
+        SavedRequest,
     };
 
     fn temporary_directory() -> std::path::PathBuf {
@@ -472,10 +631,25 @@ mod tests {
         assert_eq!(project.request_count, 0);
         assert!(root.join(".nexora/project.json").is_file());
         assert!(root.join(".nexora/requests").is_dir());
+        assert!(root.join(".nexora/folders/general.json").is_file());
         assert_eq!(
             std::fs::read_to_string(root.join(".nexora/.gitignore")).unwrap(),
             "runtime/\n"
         );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn persists_empty_folders_independently_from_requests() {
+        let root = temporary_directory();
+        create_project_sync(root.to_str().unwrap(), "Prueba").unwrap();
+        let folder = create_request_folder_sync(root.to_str().unwrap(), "Usuarios").unwrap();
+        let folders = list_request_folders_sync(root.to_str().unwrap()).unwrap();
+        assert!(folders.iter().any(|candidate| candidate.id == folder.id));
+        assert!(root
+            .join(".nexora/folders")
+            .join(format!("{}.json", folder.id))
+            .is_file());
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -497,11 +671,29 @@ mod tests {
         save_request_sync(root.to_str().unwrap(), request).unwrap();
         assert!(root.join(".nexora/requests/system/health.json").is_file());
         assert_eq!(list_requests_sync(root.to_str().unwrap()).unwrap().len(), 1);
+        assert!(list_request_folders_sync(root.to_str().unwrap())
+            .unwrap()
+            .iter()
+            .any(|folder| folder.id == "system"));
         assert_eq!(
             open_project_sync(root.to_str().unwrap())
                 .unwrap()
                 .request_count,
             1
+        );
+        delete_request_sync(root.to_str().unwrap(), "system", "health").unwrap();
+        assert!(list_requests_sync(root.to_str().unwrap())
+            .unwrap()
+            .is_empty());
+        assert!(list_request_folders_sync(root.to_str().unwrap())
+            .unwrap()
+            .iter()
+            .any(|folder| folder.id == "system"));
+        assert_eq!(
+            open_project_sync(root.to_str().unwrap())
+                .unwrap()
+                .request_count,
+            0
         );
         std::fs::remove_dir_all(root).unwrap();
     }

@@ -1,5 +1,6 @@
 import { FiCheck, FiPlus, FiTrash2 } from "react-icons/fi";
 import type { KeyValueItem } from "@/modules/api/types";
+import { TemplateInput } from "@/modules/api/components/TemplateField";
 
 type KeyValueEditorProps = {
     items: KeyValueItem[];
@@ -36,15 +37,15 @@ export function KeyValueEditor({ items, onChange }: KeyValueEditorProps) {
                         >
                             <FiCheck aria-hidden="true" />
                         </button>
-                        <input
+                        <TemplateInput
                             aria-label="Clave"
-                            onChange={(event) => updateItem(item.id, { key: event.target.value })}
+                            onValueChange={(key) => updateItem(item.id, { key })}
                             placeholder="clave"
                             value={item.key}
                         />
-                        <input
+                        <TemplateInput
                             aria-label="Valor"
-                            onChange={(event) => updateItem(item.id, { value: event.target.value })}
+                            onValueChange={(value) => updateItem(item.id, { value })}
                             placeholder="valor"
                             value={item.value}
                         />

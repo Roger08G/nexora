@@ -1,45 +1,71 @@
 import { useMemo, useState } from "react";
-import { FiChevronRight, FiFolder, FiFolderMinus, FiPlus, FiSearch } from "react-icons/fi";
-import type { RequestCollection, SavedRequest } from "@/modules/api/types";
+import {
+    FiChevronRight,
+    FiFilePlus,
+    FiFolder,
+    FiFolderMinus,
+    FiFolderPlus,
+    FiSearch,
+} from "react-icons/fi";
+import {
+    ConfirmRequestDeleteDialog,
+    RequestContextMenu,
+    TextPromptDialog,
+} from "@/modules/api/components/SidebarOverlays";
+import type { RequestFolder, SavedRequest } from "@/modules/api/types";
 
 type ApiSidebarProps = {
     activeRequestId: string;
-    collections: readonly RequestCollection[];
+    folders: readonly RequestFolder[];
     hasProject: boolean;
-    onCreate: () => void;
+    onCreateFolder: (name: string) => void;
+    onCreateRequest: (folder: RequestFolder) => void;
+    onDeleteRequest: (request: SavedRequest) => void;
+    onRenameRequest: (request: SavedRequest, name: string) => void;
     onSelect: (request: SavedRequest) => void;
+};
+
+type RequestMenuState = {
+    request: SavedRequest;
+    x: number;
+    y: number;
 };
 
 export function ApiSidebar({
     activeRequestId,
-    collections,
+    folders,
     hasProject,
-    onCreate,
+    onCreateFolder,
+    onCreateRequest,
+    onDeleteRequest,
+    onRenameRequest,
     onSelect,
 }: ApiSidebarProps) {
     const [query, setQuery] = useState("");
     const [expanded, setExpanded] = useState<string[]>(["general"]);
+    const [activeFolderId, setActiveFolderId] = useState("general");
+    const [requestMenu, setRequestMenu] = useState<RequestMenuState | null>(null);
+    const [renameTarget, setRenameTarget] = useState<SavedRequest | null>(null);
+    const [deleteTarget, setDeleteTarget] = useState<SavedRequest | null>(null);
+    const [creatingFolder, setCreatingFolder] = useState(false);
 
-    const filteredCollections = useMemo(() => {
+    const filteredFolders = useMemo(() => {
         const normalizedQuery = query.trim().toLowerCase();
-        if (!normalizedQuery) return collections;
+        if (!normalizedQuery) return folders;
 
-        return collections
-            .map((collection) => ({
-                ...collection,
-                requests: collection.requests.filter((request) =>
+        return folders
+            .map((folder) => ({
+                ...folder,
+                requests: folder.requests.filter((request) =>
                     `${request.name} ${request.url}`.toLowerCase().includes(normalizedQuery),
                 ),
             }))
-            .filter((collection) => collection.requests.length > 0);
-    }, [collections, query]);
+            .filter((folder) => folder.requests.length > 0);
+    }, [folders, query]);
 
-    function toggleCollection(collectionId: string) {
-        setExpanded((current) =>
-            current.includes(collectionId)
-                ? current.filter((id) => id !== collectionId)
-                : [...current, collectionId],
-        );
+    function selectFolder(folderId: string) {
+        setActiveFolderId(folderId);
+        setExpanded((current) => (current.includes(folderId) ? current : [...current, folderId]));
     }
 
     return (
@@ -53,25 +79,28 @@ export function ApiSidebar({
                     value={query}
                 />
                 <button
-                    aria-label="Nueva petición"
-                    onClick={onCreate}
-                    title="Nueva petición"
+                    aria-label="Nueva carpeta"
+                    disabled={!hasProject}
+                    onClick={() => setCreatingFolder(true)}
+                    title="Nueva carpeta"
                     type="button"
                 >
-                    <FiPlus aria-hidden="true" />
+                    <FiFolderPlus aria-hidden="true" />
                 </button>
             </div>
 
             <div className="module-sidebar__content">
                 <p className="eyebrow">{hasProject ? "Peticiones del proyecto" : "Sin proyecto"}</p>
-                {filteredCollections.map((collection) => {
-                    const isExpanded = expanded.includes(collection.id) || Boolean(query);
+                {filteredFolders.map((folder) => {
+                    const isExpanded = expanded.includes(folder.id) || Boolean(query);
+                    const isActive = activeFolderId === folder.id;
                     return (
-                        <section className="tree-group" key={collection.id}>
+                        <section className="tree-group" key={folder.id}>
                             <button
                                 aria-expanded={isExpanded}
                                 className="tree-group__trigger"
-                                onClick={() => toggleCollection(collection.id)}
+                                data-active={isActive}
+                                onClick={() => selectFolder(folder.id)}
                                 type="button"
                             >
                                 <FiChevronRight aria-hidden="true" data-expanded={isExpanded} />
@@ -80,17 +109,25 @@ export function ApiSidebar({
                                 ) : (
                                     <FiFolder aria-hidden="true" />
                                 )}
-                                <span>{collection.name}</span>
-                                <small>{collection.requests.length}</small>
+                                <span>{folder.name}</span>
+                                <small>{folder.requests.length}</small>
                             </button>
                             {isExpanded ? (
                                 <div className="tree-group__items">
-                                    {collection.requests.map((request) => (
+                                    {folder.requests.map((request) => (
                                         <button
                                             className="request-tree-item"
                                             data-active={request.id === activeRequestId}
                                             key={request.id}
                                             onClick={() => onSelect(request)}
+                                            onContextMenu={(event) => {
+                                                event.preventDefault();
+                                                setRequestMenu({
+                                                    request,
+                                                    x: event.clientX,
+                                                    y: event.clientY,
+                                                });
+                                            }}
                                             type="button"
                                         >
                                             <span
@@ -102,19 +139,79 @@ export function ApiSidebar({
                                             <span>{request.name}</span>
                                         </button>
                                     ))}
+                                    {isActive && !query ? (
+                                        <button
+                                            className="request-folder__create"
+                                            onClick={() => onCreateRequest(folder)}
+                                            type="button"
+                                        >
+                                            <FiFilePlus aria-hidden="true" />
+                                            <span>Añadir nueva ruta</span>
+                                        </button>
+                                    ) : null}
                                 </div>
                             ) : null}
                         </section>
                     );
                 })}
-                {filteredCollections.length === 0 ? (
+                {filteredFolders.length === 0 ? (
                     <p className="module-sidebar__empty">
                         {query
                             ? "No hay peticiones que coincidan."
-                            : "Crea una petición y abre un proyecto desde el pie para guardarla."}
+                            : "Crea una carpeta con el botón + y añade rutas dentro."}
                     </p>
                 ) : null}
             </div>
+
+            {requestMenu ? (
+                <RequestContextMenu
+                    onClose={() => setRequestMenu(null)}
+                    onDelete={() => setDeleteTarget(requestMenu.request)}
+                    onRename={() => setRenameTarget(requestMenu.request)}
+                    request={requestMenu.request}
+                    x={requestMenu.x}
+                    y={requestMenu.y}
+                />
+            ) : null}
+            {creatingFolder ? (
+                <TextPromptDialog
+                    confirmLabel="Crear carpeta"
+                    description="Las rutas se guardarán dentro de esta carpeta."
+                    label="Nombre de la carpeta"
+                    onClose={() => setCreatingFolder(false)}
+                    onConfirm={(name) => {
+                        setCreatingFolder(false);
+                        onCreateFolder(name);
+                    }}
+                    title="Nueva carpeta"
+                />
+            ) : null}
+            {renameTarget ? (
+                <TextPromptDialog
+                    confirmLabel="Cambiar nombre"
+                    description={`${renameTarget.method} ${renameTarget.url}`}
+                    icon="rename"
+                    initialValue={renameTarget.name}
+                    label="Nombre de la petición"
+                    maxLength={120}
+                    onClose={() => setRenameTarget(null)}
+                    onConfirm={(name) => {
+                        setRenameTarget(null);
+                        onRenameRequest(renameTarget, name);
+                    }}
+                    title="Cambiar nombre"
+                />
+            ) : null}
+            {deleteTarget ? (
+                <ConfirmRequestDeleteDialog
+                    onClose={() => setDeleteTarget(null)}
+                    onConfirm={() => {
+                        setDeleteTarget(null);
+                        onDeleteRequest(deleteTarget);
+                    }}
+                    request={deleteTarget}
+                />
+            ) : null}
         </aside>
     );
 }

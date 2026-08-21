@@ -29,9 +29,12 @@ export type SavedRequest = {
     body: string;
 };
 
-export type RequestCollection = {
+export type RequestFolderSummary = {
     id: string;
     name: string;
+};
+
+export type RequestFolder = RequestFolderSummary & {
     requests: SavedRequest[];
 };
 

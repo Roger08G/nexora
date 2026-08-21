@@ -16,6 +16,8 @@ pub fn run() {
             projects::create_project,
             projects::open_project,
             projects::list_requests,
+            projects::list_request_folders,
+            projects::create_request_folder,
             projects::save_request,
             projects::delete_request,
             http::execute_http,

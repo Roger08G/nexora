@@ -92,8 +92,9 @@ async fn execute(
         if key.is_empty() {
             continue;
         }
-        let name = reqwest::header::HeaderName::from_bytes(key.as_bytes())
-            .map_err(|_| AppError::Validation(format!("Header no válido: {key}")))?;
+        let resolved_key = resolve_template(key, &request.variables)?;
+        let name = reqwest::header::HeaderName::from_bytes(resolved_key.as_bytes())
+            .map_err(|_| AppError::Validation(format!("Header no válido: {resolved_key}")))?;
         let resolved_value = resolve_template(&header.value, &request.variables)?;
         let value = reqwest::header::HeaderValue::from_str(&resolved_value)
             .map_err(|_| AppError::Validation(format!("Valor no válido para el header {key}")))?;
@@ -212,7 +213,13 @@ mod tests {
             super::resolve_template("{{baseUrl}}/users", &variables).unwrap(),
             "http://localhost:3000/users"
         );
+        assert_eq!(
+            super::resolve_template("{{ baseUrl }}/{{token}}/{{token}}", &variables).unwrap(),
+            "http://localhost:3000/secret-value/secret-value"
+        );
         assert!(super::resolve_template("Bearer {{missing}}", &variables).is_err());
+        assert!(super::resolve_template("{{}}", &variables).is_err());
+        assert!(super::resolve_template("{{token", &variables).is_err());
     }
 
     #[test]
@@ -257,5 +264,65 @@ mod tests {
         server.join().unwrap();
         assert_eq!(response.status, 200);
         assert_eq!(response.body, r#"{"ok":true}"#);
+    }
+
+    #[test]
+    fn resolves_variables_in_url_query_headers_and_body() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 4_096];
+            let bytes = stream.read(&mut request).unwrap();
+            let request = String::from_utf8_lossy(&request[..bytes]);
+            assert!(request.starts_with("POST /users?active=true HTTP/1.1"));
+            assert!(request
+                .to_ascii_lowercase()
+                .contains("x-nexora-token: local-secret"));
+            assert!(request.ends_with(r#"{"name":"Roger"}"#));
+            stream
+                .write_all(
+                    b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .unwrap();
+        });
+
+        let runtime = tauri::async_runtime::TokioRuntime::new().expect("runtime");
+        let response = runtime.block_on(async {
+            execute(
+                &reqwest::Client::new(),
+                HttpRequestInput {
+                    method: "POST".into(),
+                    url: "{{server}}/{{resource}}".into(),
+                    params: vec![crate::commands::projects::KeyValueItem {
+                        id: "active".into(),
+                        enabled: true,
+                        key: "{{queryName}}".into(),
+                        value: "{{queryValue}}".into(),
+                    }],
+                    headers: vec![crate::commands::projects::KeyValueItem {
+                        id: "token".into(),
+                        enabled: true,
+                        key: "X-{{headerName}}-Token".into(),
+                        value: "{{token}}".into(),
+                    }],
+                    body: r#"{"name":"{{name}}"}"#.into(),
+                    timeout_ms: Some(5_000),
+                    variables: HashMap::from([
+                        ("server".into(), format!("http://{address}")),
+                        ("resource".into(), "users".into()),
+                        ("queryName".into(), "active".into()),
+                        ("queryValue".into(), "true".into()),
+                        ("headerName".into(), "Nexora".into()),
+                        ("token".into(), "local-secret".into()),
+                        ("name".into(), "Roger".into()),
+                    ]),
+                },
+            )
+            .await
+            .unwrap()
+        });
+        server.join().unwrap();
+        assert_eq!(response.status, 204);
     }
 }

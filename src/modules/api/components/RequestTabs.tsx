@@ -48,10 +48,10 @@ export function RequestTabs({
                 </div>
             ))}
             <button
-                aria-label="Nueva petición"
+                aria-label="Nueva ruta"
                 className="request-tabs__new"
                 onClick={onCreate}
-                title="Nueva petición"
+                title="Nueva ruta"
                 type="button"
             >
                 <FiPlus aria-hidden="true" />

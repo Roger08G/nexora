@@ -12,7 +12,7 @@ El MVP local ya conecta el frontend con el núcleo Rust. Incluye:
 - Selector inicial para abrir un proyecto `.nexora` existente o crear uno nuevo.
 - Cliente REST con ejecución HTTP real, status, headers, body, duración y tamaño de respuesta.
 - Proyectos locales `.nexora` y una petición JSON por archivo para obtener diffs claros en Git.
-- Nombres editables y guardado automático de peticiones al editar o cambiar de pestaña.
+- Carpetas persistentes, menú contextual para renombrar o eliminar rutas y guardado automático.
 - MongoDB local administrado por proyecto y conexión opcional a servidores externos.
 - Consulta de MongoDB, creación de colecciones e inserción, edición y borrado de documentos.
 - PostgreSQL 18.6 local administrado por proyecto, con esquemas, tablas y editor SQL.
@@ -71,6 +71,8 @@ ejecutarse `bun run tauri dev`.
 mi-proyecto/
 └── .nexora/
     ├── .gitignore       # excluye runtime/
+    ├── folders/         # una carpeta JSON aunque todavía no tenga rutas
+    │   └── general.json
     ├── project.json
     ├── runtime/        # datos y logs locales, no versionados
     └── requests/
@@ -79,7 +81,9 @@ mi-proyecto/
 ```
 
 Los archivos de petición guardan referencias como `Bearer {{token}}`, no el valor de `token`.
-Nexora bloquea credenciales directas en headers, parámetros y campos JSON sensibles conocidos.
+Al ejecutar, Nexora resuelve variables en URL, nombres y valores de query y headers, y body. Las
+referencias incompletas o sin valor producen un error antes de enviar tráfico. Nexora bloquea
+credenciales directas en headers, parámetros y campos JSON sensibles conocidos.
 
 ## MongoDB local administrado
 

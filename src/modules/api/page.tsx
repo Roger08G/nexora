@@ -9,10 +9,18 @@ import { ApiSidebar } from "@/modules/api/components/ApiSidebar";
 import { RequestEditor } from "@/modules/api/components/RequestEditor";
 import { RequestTabs } from "@/modules/api/components/RequestTabs";
 import { ResponsePanel } from "@/modules/api/components/ResponsePanel";
-import { executeRequest, loadRequests, persistRequest } from "@/modules/api/services/api.service";
+import {
+    createRequestFolder,
+    deleteSavedRequest,
+    executeRequest,
+    loadRequestFolders,
+    loadRequests,
+    persistRequest,
+} from "@/modules/api/services/api.service";
 import type {
-    RequestCollection,
     RequestDraft,
+    RequestFolder,
+    RequestFolderSummary,
     RequestSaveState,
     ResponseState,
     SavedRequest,
@@ -24,7 +32,10 @@ export function ApiPage() {
     const { registerItems } = useGlobalSearch();
     const { project } = useProject();
     const { values: sessionVariables } = useSessionVariables();
-    const [requests, setRequests] = useState<SavedRequest[]>(() => [newRequest()]);
+    const [folderSummaries, setFolderSummaries] = useState<RequestFolderSummary[]>(() => [
+        DEFAULT_FOLDER,
+    ]);
+    const [requests, setRequests] = useState<SavedRequest[]>(() => [newRequest(DEFAULT_FOLDER)]);
     const [openRequestIds, setOpenRequestIds] = useState<string[]>(() => [requests[0].id]);
     const [activeRequestId, setActiveRequestId] = useState(requests[0].id);
     const [responseState, setResponseState] = useState<ResponseState>({ status: "idle" });
@@ -42,15 +53,17 @@ export function ApiPage() {
         if (!project) return;
         let active = true;
         setRequestsLoaded(false);
-        loadRequests(project.root)
-            .then((saved) => {
+        Promise.all([loadRequests(project.root), loadRequestFolders(project.root)])
+            .then(([saved, savedFolders]) => {
                 if (!active) return;
-                const next = saved.length > 0 ? saved : [newRequest()];
+                const nextFolders = savedFolders.length ? savedFolders : [DEFAULT_FOLDER];
+                const next = saved.length > 0 ? saved : [newRequest(nextFolders[0])];
                 requestsRef.current = next;
                 savedSnapshots.current = new Map(
                     saved.map((request) => [request.id, requestSnapshot(request)]),
                 );
                 setRequests(next);
+                setFolderSummaries(nextFolders);
                 setSaveStates(
                     Object.fromEntries(saved.map((request) => [request.id, "saved" as const])),
                 );
@@ -70,7 +83,10 @@ export function ApiPage() {
         };
     }, [project]);
 
-    const collections = useMemo(() => buildCollections(requests), [requests]);
+    const folders = useMemo(
+        () => buildFolders(folderSummaries, requests),
+        [folderSummaries, requests],
+    );
     const openRequests = openRequestIds.flatMap((id) => {
         const request = requests.find((candidate) => candidate.id === id);
         return request ? [request] : [];
@@ -124,14 +140,82 @@ export function ApiPage() {
         [project, requestsLoaded, settings.autoSaveRequests],
     );
 
-    async function create() {
+    async function create(folder?: RequestFolderSummary) {
         await flushActiveRequest();
-        const request = newRequest();
+        const targetFolder =
+            folder ??
+            folders.find((candidate) => candidate.id === activeRequest.collectionId) ??
+            folders[0] ??
+            DEFAULT_FOLDER;
+        const request = newRequest(targetFolder);
         setRequestsAndRef((current) => [...current, request]);
         setOpenRequestIds((current) => [...current, request.id]);
         setActiveRequestId(request.id);
         setResponseState({ status: "idle" });
-        toast.info("Nueva petición creada", { description: "Ponle un nombre y empieza a editar." });
+        toast.info("Nueva ruta creada", { description: targetFolder.name });
+    }
+
+    async function createFolder(name: string) {
+        if (!project) return;
+        try {
+            const folder = await createRequestFolder(project.root, name);
+            setFolderSummaries((current) => [...current, folder]);
+            toast.success("Carpeta creada", { description: folder.name });
+        } catch (error) {
+            toast.error("No se pudo crear la carpeta", { description: getErrorMessage(error) });
+        }
+    }
+
+    async function renameRequest(request: SavedRequest, name: string) {
+        const normalizedName = name.trim();
+        if (!normalizedName || normalizedName === request.name) return;
+        const renamed = { ...request, name: normalizedName };
+        setRequestsAndRef((current) =>
+            current.map((candidate) => (candidate.id === request.id ? renamed : candidate)),
+        );
+        setRequestSaveState(request.id, "idle");
+        await saveRequest(renamed, "rename");
+    }
+
+    async function deleteRequest(request: SavedRequest) {
+        if (!project) return;
+        const queued = saveQueue.current.get(request.id);
+        if (queued) await queued;
+        try {
+            if (savedSnapshots.current.has(request.id)) {
+                await deleteSavedRequest(project.root, request.collectionId, request.id);
+            }
+            savedSnapshots.current.delete(request.id);
+            saveQueue.current.delete(request.id);
+            const remaining = requestsRef.current.filter(
+                (candidate) => candidate.id !== request.id,
+            );
+            const fallbackFolder =
+                folders.find((folder) => folder.id === request.collectionId) ??
+                folders[0] ??
+                DEFAULT_FOLDER;
+            const nextRequests = remaining.length ? remaining : [newRequest(fallbackFolder)];
+            requestsRef.current = nextRequests;
+            setRequests(nextRequests);
+            setSaveStates((current) => {
+                const next = { ...current };
+                delete next[request.id];
+                return next;
+            });
+
+            const nextOpenIds = openRequestIds.filter((id) => id !== request.id);
+            const normalizedOpenIds = nextOpenIds.length ? nextOpenIds : [nextRequests[0].id];
+            setOpenRequestIds(normalizedOpenIds);
+            if (activeRequestId === request.id) {
+                setActiveRequestId(normalizedOpenIds[0]);
+                setResponseState({ status: "idle" });
+            }
+            toast.success("Petición eliminada", { description: request.name });
+        } catch (error) {
+            toast.error("No se pudo eliminar la petición", {
+                description: getErrorMessage(error),
+            });
+        }
     }
 
     async function activateRequest(requestId: string) {
@@ -203,7 +287,10 @@ export function ApiPage() {
         if (request) await saveRequest(request, "switch");
     }
 
-    async function saveRequest(request: SavedRequest, reason: "auto" | "manual" | "switch") {
+    async function saveRequest(
+        request: SavedRequest,
+        reason: "auto" | "manual" | "rename" | "switch",
+    ) {
         if (!project) return false;
         const signature = requestSnapshot(request);
         if (savedSnapshots.current.get(request.id) === signature) {
@@ -235,10 +322,17 @@ export function ApiPage() {
                     ),
                 );
                 setRequestSaveState(request.id, "saved");
-                toast.success(reason === "manual" ? "Petición guardada" : "Cambios guardados", {
-                    description: request.name,
-                    id: `request-save-${request.id}`,
-                });
+                toast.success(
+                    reason === "manual"
+                        ? "Petición guardada"
+                        : reason === "rename"
+                          ? "Nombre actualizado"
+                          : "Cambios guardados",
+                    {
+                        description: request.name,
+                        id: `request-save-${request.id}`,
+                    },
+                );
                 return true;
             } catch (error) {
                 const message = getErrorMessage(error);
@@ -274,9 +368,12 @@ export function ApiPage() {
         <section className="module-page api-page">
             <ApiSidebar
                 activeRequestId={activeRequest.id}
-                collections={collections}
+                folders={folders}
                 hasProject={Boolean(project)}
-                onCreate={() => void create()}
+                onCreateFolder={(name) => void createFolder(name)}
+                onCreateRequest={(folder) => void create(folder)}
+                onDeleteRequest={(request) => void deleteRequest(request)}
+                onRenameRequest={(request, name) => void renameRequest(request, name)}
                 onSelect={(request) => void activateRequest(request.id)}
             />
             <div className="module-workbench">
@@ -294,10 +391,8 @@ export function ApiPage() {
                         draft={activeDraft}
                         isSending={responseState.status === "loading"}
                         onChange={(draft) => updateActive(draft)}
-                        onNameChange={(name) => updateActive({ name }, false)}
                         onSave={() => void save()}
                         onSend={() => void send()}
-                        requestName={activeRequest.name}
                         saveState={saveStates[activeRequest.id] ?? "idle"}
                     />
                     <ResponsePanel draft={activeDraft} state={responseState} />
@@ -307,11 +402,13 @@ export function ApiPage() {
     );
 }
 
-function newRequest(): SavedRequest {
+const DEFAULT_FOLDER: RequestFolderSummary = { id: "general", name: "General" };
+
+function newRequest(folder: RequestFolderSummary): SavedRequest {
     return {
         id: `request-${crypto.randomUUID()}`,
-        collectionId: "general",
-        collectionName: "General",
+        collectionId: folder.id,
+        collectionName: folder.name,
         name: "Nueva petición",
         method: "GET",
         url: "http://localhost:3000",
@@ -321,8 +418,10 @@ function newRequest(): SavedRequest {
     };
 }
 
-function buildCollections(requests: SavedRequest[]): RequestCollection[] {
-    const grouped = new Map<string, RequestCollection>();
+function buildFolders(folders: RequestFolderSummary[], requests: SavedRequest[]): RequestFolder[] {
+    const grouped = new Map<string, RequestFolder>(
+        folders.map((folder) => [folder.id, { ...folder, requests: [] }]),
+    );
     for (const request of requests) {
         const existing = grouped.get(request.collectionId);
         if (existing) existing.requests.push(request);
@@ -334,7 +433,7 @@ function buildCollections(requests: SavedRequest[]): RequestCollection[] {
             });
         }
     }
-    return [...grouped.values()];
+    return [...grouped.values()].sort((left, right) => left.name.localeCompare(right.name));
 }
 
 function requestSnapshot(request: SavedRequest) {

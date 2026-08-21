@@ -51,29 +51,25 @@ export function SettingsPage() {
                         description="Tiempo de espera tras el último cambio antes de escribir en .nexora."
                         label="Espera de autosave"
                     >
-                        <div aria-label="Espera de autosave" className="settings-options">
-                            {[
-                                [400, "400 ms"],
-                                [800, "800 ms"],
-                                [1500, "1,5 s"],
-                                [3000, "3 s"],
-                            ].map(([value, label]) => (
-                                <button
-                                    data-active={settings.autoSaveDelayMs === value}
-                                    disabled={!settings.autoSaveRequests}
-                                    key={value}
-                                    onClick={() =>
-                                        update(
-                                            { autoSaveDelayMs: Number(value) },
-                                            "Tiempo de autosave actualizado",
-                                        )
-                                    }
-                                    type="button"
-                                >
-                                    {label}
-                                </button>
-                            ))}
-                        </div>
+                        <label className="settings-select">
+                            <span className="sr-only">Espera de autosave</span>
+                            <select
+                                aria-label="Espera de autosave"
+                                disabled={!settings.autoSaveRequests}
+                                onChange={(event) =>
+                                    update(
+                                        { autoSaveDelayMs: Number(event.target.value) },
+                                        "Tiempo de autosave actualizado",
+                                    )
+                                }
+                                value={settings.autoSaveDelayMs}
+                            >
+                                <option value={400}>400 ms</option>
+                                <option value={800}>800 ms</option>
+                                <option value={1500}>1,5 s</option>
+                                <option value={3000}>3 s</option>
+                            </select>
+                        </label>
                     </SettingsField>
                     <SettingsField
                         description="Nexora cancelará la petición si el servidor no responde a tiempo."

@@ -3,6 +3,7 @@ import { FiCheck, FiLoader, FiSave, FiSend } from "react-icons/fi";
 import type { RequestDraft, RequestSaveState } from "@/modules/api/types";
 import { KeyValueEditor } from "@/modules/api/components/KeyValueEditor";
 import { MethodSelect } from "@/modules/api/components/MethodSelect";
+import { TemplateInput, TemplateTextarea } from "@/modules/api/components/TemplateField";
 import { ActionButton } from "@/shared/components/ui/ActionButton";
 
 type EditorSection = "params" | "headers" | "body" | "auth";
@@ -13,10 +14,8 @@ type RequestEditorProps = {
     draft: RequestDraft;
     isSending: boolean;
     onChange: (draft: RequestDraft) => void;
-    onNameChange: (name: string) => void;
     onSave: () => void;
     onSend: () => void;
-    requestName: string;
     saveState: RequestSaveState;
 };
 
@@ -33,41 +32,27 @@ export function RequestEditor({
     draft,
     isSending,
     onChange,
-    onNameChange,
     onSave,
     onSend,
-    requestName,
     saveState,
 }: RequestEditorProps) {
     const [activeSection, setActiveSection] = useState<EditorSection>("params");
 
     return (
         <section className="request-editor">
-            <div className="request-editor__identity">
-                <label>
-                    <span>Nombre de la petición</span>
-                    <input
-                        aria-label="Nombre de la petición"
-                        maxLength={120}
-                        onChange={(event) => onNameChange(event.target.value)}
-                        placeholder="Ej. Crear usuario"
-                        value={requestName}
-                    />
-                </label>
-                <SaveState autoSave={autoSave} state={saveState} />
-            </div>
             <div className="request-editor__bar">
                 <MethodSelect
                     onChange={(method) => onChange({ ...draft, method })}
                     value={draft.method}
                 />
-                <input
+                <TemplateInput
                     aria-label="URL de la petición"
                     className="request-editor__url"
-                    onChange={(event) => onChange({ ...draft, url: event.target.value })}
+                    onValueChange={(url) => onChange({ ...draft, url })}
                     spellCheck={false}
                     value={draft.url}
                 />
+                <SaveState autoSave={autoSave} state={saveState} />
                 <ActionButton disabled={isSending} icon={FiSend} onClick={onSend} tone="primary">
                     {isSending ? "Enviando" : "Enviar"}
                 </ActionButton>
@@ -124,9 +109,10 @@ export function RequestEditor({
                             <span>JSON</span>
                             <small>UTF-8</small>
                         </div>
-                        <textarea
+                        <TemplateTextarea
                             aria-label="Body JSON"
-                            onChange={(event) => onChange({ ...draft, body: event.target.value })}
+                            className="code-editor__template"
+                            onValueChange={(body) => onChange({ ...draft, body })}
                             placeholder="Esta petición no tiene body"
                             spellCheck={false}
                             value={draft.body}

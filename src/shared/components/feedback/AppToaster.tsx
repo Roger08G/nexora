@@ -3,14 +3,12 @@ import { Toaster } from "sonner";
 export function AppToaster() {
     return (
         <Toaster
-            closeButton
-            duration={3_200}
-            gap={9}
+            duration={2_800}
+            gap={7}
             position="bottom-right"
-            richColors
             theme="dark"
             toastOptions={{ className: "nexora-toast" }}
-            visibleToasts={4}
+            visibleToasts={3}
         />
     );
 }
