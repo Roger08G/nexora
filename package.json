@@ -1,0 +1,34 @@
+{
+    "name": "nexora",
+    "private": true,
+    "version": "0.1.0",
+    "type": "module",
+    "packageManager": "bun@1.3.14",
+    "scripts": {
+        "dev": "vite",
+        "build": "tsc && vite build",
+        "typecheck": "tsc --noEmit",
+        "preview": "vite preview",
+        "tauri": "tauri",
+        "fmt": "prettier --write --config .prettierrc --ignore-path .prettierignore .prettierrc \"**/*.{json,md,mjs,js,ts,tsx,jsx}\"",
+        "fmt:check": "prettier --check --config .prettierrc --ignore-path .prettierignore .prettierrc \"**/*.{json,md,mjs,js,ts,tsx,jsx}\""
+    },
+    "dependencies": {
+        "@react-three/fiber": "^9.7.0",
+        "@tauri-apps/api": "^2",
+        "react": "^19.1.0",
+        "react-dom": "^19.1.0",
+        "react-icons": "^5.7.0",
+        "three": "^0.185.1"
+    },
+    "devDependencies": {
+        "@tauri-apps/cli": "^2",
+        "@types/react": "^19.1.8",
+        "@types/react-dom": "^19.1.6",
+        "@types/three": "^0.185.4",
+        "@vitejs/plugin-react": "^4.6.0",
+        "prettier": "^3.8.3",
+        "typescript": "~5.8.3",
+        "vite": "^7.0.4"
+    }
+}

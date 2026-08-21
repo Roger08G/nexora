@@ -1,0 +1,14 @@
+# Generated
+.next/
+dist/
+node_modules/
+bun.lock
+*.tsbuildinfo
+
+# Static assets
+public/
+
+src-tauri/target
+src-tauri/gen/
+target/
+gen/
