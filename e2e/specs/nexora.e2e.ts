@@ -414,7 +414,7 @@ async function clickButton(label: string) {
 }
 
 function findSavedRequestByName(name: string, required = true) {
-    const requestRoot = join(projectRoot, ".nexora", "requests");
+    const requestRoot = join(projectRoot, "requests");
     for (const folder of readdirSync(requestRoot, { withFileTypes: true })) {
         if (!folder.isDirectory()) continue;
         for (const file of readdirSync(join(requestRoot, folder.name))) {
@@ -461,4 +461,8 @@ async function stopLocalRuntime(workspace: string, selector: string) {
 }
 
 expect(existsSync(join(projectRoot, ".nexora"))).toBe(true);
+expect(existsSync(join(projectRoot, "folders"))).toBe(true);
+expect(existsSync(join(projectRoot, "monitors"))).toBe(true);
+expect(existsSync(join(projectRoot, "requests"))).toBe(true);
+expect(existsSync(join(projectRoot, ".nexora", "requests"))).toBe(false);
 expect(readSavedRequest(projectRoot, "general", "health").method).toBe("GET");

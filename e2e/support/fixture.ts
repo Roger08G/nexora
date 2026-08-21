@@ -6,17 +6,20 @@ export const E2E_API_URL = `http://127.0.0.1:${E2E_API_PORT}`;
 
 export function createProjectFixture(root: string) {
     const nexora = join(root, ".nexora");
-    mkdirSync(join(nexora, "folders"), { recursive: true });
-    mkdirSync(join(nexora, "requests", "general"), { recursive: true });
-    mkdirSync(join(nexora, "requests", "mutations"), { recursive: true });
+    mkdirSync(nexora, { recursive: true });
+    mkdirSync(join(root, "folders"), { recursive: true });
+    mkdirSync(join(root, "monitors"), { recursive: true });
+    mkdirSync(join(root, "requests", "general"), { recursive: true });
+    mkdirSync(join(root, "requests", "mutations"), { recursive: true });
 
     writeJson(join(nexora, "project.json"), {
         id: "nexora-webview-e2e",
         name: "Nexora WebView E2E",
-        schemaVersion: 1,
+        schemaVersion: 2,
     });
-    writeJson(join(nexora, "folders", "general.json"), { id: "general", name: "General" });
-    writeJson(join(nexora, "folders", "mutations.json"), {
+    writeFileSync(join(nexora, ".gitignore"), "runtime/\n", "utf8");
+    writeJson(join(root, "folders", "general.json"), { id: "general", name: "General" });
+    writeJson(join(root, "folders", "mutations.json"), {
         id: "mutations",
         name: "Mutaciones",
     });
@@ -80,7 +83,7 @@ export async function removeProjectFixture(root: string) {
 
 export function readSavedRequest(root: string, folder: string, request: string) {
     return JSON.parse(
-        readFileSync(join(root, ".nexora", "requests", folder, `${request}.json`), "utf8"),
+        readFileSync(join(root, "requests", folder, `${request}.json`), "utf8"),
     ) as Record<string, unknown>;
 }
 
@@ -108,7 +111,7 @@ function item(id: string, key: string, value: string): KeyValue {
 }
 
 function writeRequest(root: string, request: FixtureRequest) {
-    writeJson(join(root, ".nexora", "requests", request.collectionId, `${request.id}.json`), {
+    writeJson(join(root, "requests", request.collectionId, `${request.id}.json`), {
         body: request.body ?? "",
         collectionId: request.collectionId,
         collectionName: request.collectionName,

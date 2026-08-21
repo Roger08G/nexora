@@ -7,8 +7,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{AppError, CommandResult};
 
-const SCHEMA_VERSION: u32 = 1;
+const LEGACY_SCHEMA_VERSION: u32 = 1;
+const SCHEMA_VERSION: u32 = 2;
 pub(crate) const PROJECT_DIR: &str = ".nexora";
+const FOLDERS_DIR: &str = "folders";
+const MONITORS_DIR: &str = "monitors";
+const REQUESTS_DIR: &str = "requests";
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -147,10 +151,18 @@ pub(crate) fn create_project_sync(root: &str, name: &str) -> Result<ProjectSumma
             "La carpeta ya contiene un proyecto Nexora".into(),
         ));
     }
+    for directory in [FOLDERS_DIR, MONITORS_DIR, REQUESTS_DIR] {
+        if root.join(directory).exists() {
+            return Err(AppError::Conflict(format!(
+                "La ruta reservada {directory}/ ya existe en la carpeta del proyecto"
+            )));
+        }
+    }
 
     fs::create_dir(&project_dir)?;
-    fs::create_dir(project_dir.join("requests"))?;
-    fs::create_dir(project_dir.join("folders"))?;
+    fs::create_dir(root.join(REQUESTS_DIR))?;
+    fs::create_dir(root.join(FOLDERS_DIR))?;
+    fs::create_dir(root.join(MONITORS_DIR))?;
     let manifest = ProjectManifest {
         id: uuid::Uuid::new_v4().to_string(),
         schema_version: SCHEMA_VERSION,
@@ -158,7 +170,7 @@ pub(crate) fn create_project_sync(root: &str, name: &str) -> Result<ProjectSumma
     };
     write_json_atomic(&project_dir.join("project.json"), &manifest)?;
     write_json_atomic(
-        &project_dir.join("folders/general.json"),
+        &root.join(FOLDERS_DIR).join("general.json"),
         &RequestFolder {
             id: "general".into(),
             name: "General".into(),
@@ -172,6 +184,7 @@ pub(crate) fn create_project_sync(root: &str, name: &str) -> Result<ProjectSumma
 fn open_project_sync(root: &str) -> Result<ProjectSummary, AppError> {
     let (root, manifest) = validated_project(root)?;
     ensure_request_folders(&root)?;
+    fs::create_dir_all(root.join(MONITORS_DIR))?;
     ensure_runtime_ignored(&root)?;
     summary(&root, manifest)
 }
@@ -467,17 +480,121 @@ fn validated_project_root(root: &str) -> Result<PathBuf, AppError> {
 fn validated_project(root: &str) -> Result<(PathBuf, ProjectManifest), AppError> {
     let root = canonical_directory(root)?;
     let mut manifest = read_manifest(&root)?;
-    if manifest.schema_version != SCHEMA_VERSION {
+    if !matches!(
+        manifest.schema_version,
+        LEGACY_SCHEMA_VERSION | SCHEMA_VERSION
+    ) {
         return Err(AppError::Validation(format!(
             "Versión de proyecto no soportada: {}",
             manifest.schema_version
         )));
     }
+
+    migrate_legacy_project_content(&root)?;
+
+    let mut manifest_changed = false;
+    if manifest.schema_version == LEGACY_SCHEMA_VERSION {
+        manifest.schema_version = SCHEMA_VERSION;
+        manifest_changed = true;
+    }
     if manifest.id.is_empty() {
         manifest.id = uuid::Uuid::new_v4().to_string();
+        manifest_changed = true;
+    }
+    if manifest_changed {
         write_json_atomic(&root.join(PROJECT_DIR).join("project.json"), &manifest)?;
     }
     Ok((root, manifest))
+}
+
+fn migrate_legacy_project_content(root: &Path) -> Result<(), AppError> {
+    let legacy_root = root.join(PROJECT_DIR);
+    for directory in [FOLDERS_DIR, MONITORS_DIR, REQUESTS_DIR] {
+        let source = legacy_root.join(directory);
+        if source.exists() {
+            ensure_migration_compatible(&source, &root.join(directory))?;
+        }
+    }
+    for directory in [FOLDERS_DIR, MONITORS_DIR, REQUESTS_DIR] {
+        let source = legacy_root.join(directory);
+        if source.exists() {
+            merge_legacy_directory(&source, &root.join(directory))?;
+        }
+    }
+    Ok(())
+}
+
+fn ensure_migration_compatible(source: &Path, destination: &Path) -> Result<(), AppError> {
+    let source_type = fs::symlink_metadata(source)?.file_type();
+    if source_type.is_symlink() || !source_type.is_dir() {
+        return Err(AppError::Validation(format!(
+            "La ruta heredada {} no es una carpeta",
+            source.display()
+        )));
+    }
+    if !destination.exists() {
+        return Ok(());
+    }
+    let destination_type = fs::symlink_metadata(destination)?.file_type();
+    if destination_type.is_symlink() || !destination_type.is_dir() {
+        return Err(migration_conflict(source, destination));
+    }
+
+    for entry in fs::read_dir(source)? {
+        let entry = entry?;
+        let source_path = entry.path();
+        let destination_path = destination.join(entry.file_name());
+        let file_type = entry.file_type()?;
+        if file_type.is_dir() {
+            ensure_migration_compatible(&source_path, &destination_path)?;
+        } else if file_type.is_file() {
+            if destination_path.exists() {
+                let destination_type = fs::symlink_metadata(&destination_path)?.file_type();
+                if destination_type.is_symlink()
+                    || !destination_type.is_file()
+                    || fs::read(&source_path)? != fs::read(&destination_path)?
+                {
+                    return Err(migration_conflict(&source_path, &destination_path));
+                }
+            }
+        } else {
+            return Err(AppError::Validation(format!(
+                "La migración no admite enlaces ni archivos especiales: {}",
+                source_path.display()
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn merge_legacy_directory(source: &Path, destination: &Path) -> Result<(), AppError> {
+    if !destination.exists() {
+        fs::rename(source, destination)?;
+        return Ok(());
+    }
+
+    for entry in fs::read_dir(source)? {
+        let entry = entry?;
+        let source_path = entry.path();
+        let destination_path = destination.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            merge_legacy_directory(&source_path, &destination_path)?;
+        } else if destination_path.exists() {
+            fs::remove_file(source_path)?;
+        } else {
+            fs::rename(source_path, destination_path)?;
+        }
+    }
+    fs::remove_dir(source)?;
+    Ok(())
+}
+
+fn migration_conflict(source: &Path, destination: &Path) -> AppError {
+    AppError::Conflict(format!(
+        "No se puede migrar {} porque {} ya existe con otro contenido",
+        source.display(),
+        destination.display()
+    ))
 }
 
 pub(crate) fn project_runtime_context(root: &str) -> Result<(PathBuf, String), AppError> {
@@ -507,11 +624,11 @@ fn canonical_directory(root: &str) -> Result<PathBuf, AppError> {
 }
 
 fn requests_dir(root: &Path) -> PathBuf {
-    root.join(PROJECT_DIR).join("requests")
+    root.join(REQUESTS_DIR)
 }
 
 fn folders_dir(root: &Path) -> PathBuf {
-    root.join(PROJECT_DIR).join("folders")
+    root.join(FOLDERS_DIR)
 }
 
 fn summary(root: &Path, manifest: ProjectManifest) -> Result<ProjectSummary, AppError> {
@@ -537,6 +654,16 @@ struct ProjectMetrics {
 fn project_metrics(root: &Path) -> Result<ProjectMetrics, AppError> {
     let mut metrics = ProjectMetrics::default();
     collect_metrics(&root.join(PROJECT_DIR), false, &mut metrics)?;
+    for directory in [FOLDERS_DIR, MONITORS_DIR] {
+        let path = root.join(directory);
+        if path.is_dir() {
+            collect_metrics(&path, false, &mut metrics)?;
+        }
+    }
+    let requests = root.join(REQUESTS_DIR);
+    if requests.is_dir() {
+        collect_metrics(&requests, true, &mut metrics)?;
+    }
     Ok(metrics)
 }
 
@@ -612,7 +739,7 @@ mod tests {
     use super::{
         create_project_sync, create_request_folder_sync, delete_request_sync,
         list_request_folders_sync, list_requests_sync, open_project_sync, save_request_sync,
-        SavedRequest,
+        ProjectManifest, SavedRequest,
     };
 
     fn temporary_directory() -> std::path::PathBuf {
@@ -630,8 +757,10 @@ mod tests {
         assert!(project.project_file_count >= 2);
         assert_eq!(project.request_count, 0);
         assert!(root.join(".nexora/project.json").is_file());
-        assert!(root.join(".nexora/requests").is_dir());
-        assert!(root.join(".nexora/folders/general.json").is_file());
+        assert!(root.join("requests").is_dir());
+        assert!(root.join("folders/general.json").is_file());
+        assert!(root.join("monitors").is_dir());
+        assert!(!root.join(".nexora/requests").exists());
         assert_eq!(
             std::fs::read_to_string(root.join(".nexora/.gitignore")).unwrap(),
             "runtime/\n"
@@ -647,7 +776,7 @@ mod tests {
         let folders = list_request_folders_sync(root.to_str().unwrap()).unwrap();
         assert!(folders.iter().any(|candidate| candidate.id == folder.id));
         assert!(root
-            .join(".nexora/folders")
+            .join("folders")
             .join(format!("{}.json", folder.id))
             .is_file());
         std::fs::remove_dir_all(root).unwrap();
@@ -669,7 +798,7 @@ mod tests {
             body: String::new(),
         };
         save_request_sync(root.to_str().unwrap(), request).unwrap();
-        assert!(root.join(".nexora/requests/system/health.json").is_file());
+        assert!(root.join("requests/system/health.json").is_file());
         assert_eq!(list_requests_sync(root.to_str().unwrap()).unwrap().len(), 1);
         assert!(list_request_folders_sync(root.to_str().unwrap())
             .unwrap()
@@ -695,6 +824,73 @@ mod tests {
                 .request_count,
             0
         );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn migrates_legacy_hidden_content_without_losing_data() {
+        let root = temporary_directory();
+        create_project_sync(root.to_str().unwrap(), "Proyecto heredado").unwrap();
+
+        let project_dir = root.join(".nexora");
+        std::fs::rename(root.join("folders"), project_dir.join("folders")).unwrap();
+        std::fs::rename(root.join("requests"), project_dir.join("requests")).unwrap();
+        std::fs::rename(root.join("monitors"), project_dir.join("monitors")).unwrap();
+        let mut manifest: ProjectManifest =
+            serde_json::from_slice(&std::fs::read(project_dir.join("project.json")).unwrap())
+                .unwrap();
+        manifest.schema_version = 1;
+        super::write_json_atomic(&project_dir.join("project.json"), &manifest).unwrap();
+
+        std::fs::create_dir_all(project_dir.join("requests/system")).unwrap();
+        std::fs::write(
+            project_dir.join("requests/system/health.json"),
+            r#"{
+  "id": "health",
+  "collectionId": "system",
+  "collectionName": "Sistema",
+  "name": "Health",
+  "method": "GET",
+  "url": "http://localhost:3000/health",
+  "params": [],
+  "headers": [],
+  "body": ""
+}
+"#,
+        )
+        .unwrap();
+
+        let project = open_project_sync(root.to_str().unwrap()).unwrap();
+        assert_eq!(project.schema_version, 2);
+        assert_eq!(project.request_count, 1);
+        assert!(root.join("requests/system/health.json").is_file());
+        assert!(root.join("folders/general.json").is_file());
+        assert!(root.join("monitors").is_dir());
+        assert!(!project_dir.join("requests").exists());
+        assert!(!project_dir.join("folders").exists());
+        assert!(!project_dir.join("monitors").exists());
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn refuses_to_overwrite_visible_content_during_migration() {
+        let root = temporary_directory();
+        create_project_sync(root.to_str().unwrap(), "Proyecto con conflicto").unwrap();
+
+        let project_dir = root.join(".nexora");
+        std::fs::rename(root.join("folders"), project_dir.join("folders")).unwrap();
+        std::fs::create_dir(root.join("folders")).unwrap();
+        std::fs::write(root.join("folders/general.json"), "contenido distinto\n").unwrap();
+
+        let error = open_project_sync(root.to_str().unwrap()).unwrap_err();
+        assert!(error.to_string().contains("No se puede migrar"));
+        assert!(project_dir.join("folders/general.json").is_file());
+        assert_eq!(
+            std::fs::read_to_string(root.join("folders/general.json")).unwrap(),
+            "contenido distinto\n"
+        );
+
         std::fs::remove_dir_all(root).unwrap();
     }
 

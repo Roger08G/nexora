@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 
 use crate::{
-    commands::projects::{project_runtime_context, write_json_atomic, PROJECT_DIR},
+    commands::projects::{project_runtime_context, write_json_atomic},
     error::{AppError, CommandResult},
     state::AppState,
 };
@@ -131,7 +131,7 @@ fn delete_monitor_sync(project_root: &str, monitor_id: &str) -> Result<(), AppEr
 
 fn monitors_dir(project_root: &str) -> Result<PathBuf, AppError> {
     let (root, _) = project_runtime_context(project_root)?;
-    let directory = root.join(PROJECT_DIR).join("monitors");
+    let directory = root.join("monitors");
     fs::create_dir_all(&directory)?;
     Ok(directory)
 }
@@ -206,7 +206,7 @@ mod tests {
             updated_at_ms: 0,
         };
         let saved = save_monitor_sync(root.to_str().unwrap(), monitor).unwrap();
-        assert!(root.join(".nexora/monitors/monitor-health.json").is_file());
+        assert!(root.join("monitors/monitor-health.json").is_file());
         assert!(saved.created_at_ms > 0);
         assert_eq!(list_monitors_sync(root.to_str().unwrap()).unwrap().len(), 1);
         delete_monitor_sync(root.to_str().unwrap(), "monitor-health").unwrap();
