@@ -33,7 +33,7 @@ export function SessionVariablesEditor({
             </header>
             <div className="session-variables__notice">
                 Guarda solo las referencias en tus peticiones. Nexora bloqueará headers y campos
-                sensibles con valores directos al guardar en .nexora.
+                sensibles con valores directos al guardar en el proyecto.
             </div>
             <div className="session-variables__table">
                 <div className="session-variable-row session-variable-row--header">

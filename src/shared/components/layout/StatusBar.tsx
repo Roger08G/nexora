@@ -37,9 +37,7 @@ export function StatusBar({ workspace }: StatusBarProps) {
                 {isMenuOpen ? (
                     <div className="status-bar__project-menu">
                         <strong>{project ? project.name : "Proyecto local"}</strong>
-                        <small>
-                            {project?.root ?? "Abre una carpeta .nexora o crea un proyecto."}
-                        </small>
+                        <small>{project?.root ?? "Abre o crea un proyecto Nexora local."}</small>
                         {error ? <p>{error}</p> : null}
                         <div>
                             <button

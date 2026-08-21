@@ -29,8 +29,8 @@ export function ProjectStartPage() {
                     <span className="project-launcher__eyebrow">Workspace local</span>
                     <h1>Elige un proyecto para comenzar</h1>
                     <p>
-                        Nexora guarda la configuración, las rutas y los datos de desarrollo dentro
-                        de tu propio proyecto. No necesita cuentas ni servicios en la nube.
+                        Nexora guarda las rutas y pruebas como archivos visibles dentro de tu
+                        proyecto. No necesita cuentas ni servicios en la nube.
                     </p>
                 </div>
 
@@ -41,7 +41,7 @@ export function ProjectStartPage() {
                     </header>
                     <div className="project-launcher__actions">
                         <ProjectAction
-                            description="Selecciona una carpeta que ya contenga .nexora"
+                            description="Selecciona la carpeta raíz de un proyecto Nexora"
                             disabled={busy}
                             icon={FiFolder}
                             label="Abrir proyecto existente"
@@ -52,7 +52,7 @@ export function ProjectStartPage() {
                             tone="primary"
                         />
                         <ProjectAction
-                            description="Crea la estructura .nexora en una carpeta local"
+                            description="Crea una estructura local preparada para Git"
                             disabled={busy}
                             icon={FiFolderPlus}
                             label="Crear un proyecto nuevo"
@@ -83,7 +83,7 @@ export function ProjectStartPage() {
                         </span>
                     ))}
                 </div>
-                <span>v0.1.0 · Tauri · React · Rust</span>
+                <span>v0.2.0-alpha · Tauri · React · Rust</span>
             </footer>
         </section>
     );

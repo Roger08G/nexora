@@ -48,7 +48,7 @@ export function SettingsPage() {
                         />
                     </SettingsField>
                     <SettingsField
-                        description="Tiempo de espera tras el último cambio antes de escribir en .nexora."
+                        description="Tiempo de espera tras el último cambio antes de escribir en requests/."
                         label="Espera de autosave"
                     >
                         <label className="settings-select">

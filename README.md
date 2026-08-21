@@ -9,9 +9,10 @@ MongoDB y PostgreSQL dentro de proyectos versionables con Git.
 El MVP local ya conecta el frontend con el núcleo Rust. Incluye:
 
 - Shell de escritorio modular con navegación entre espacios de trabajo.
-- Selector inicial para abrir un proyecto `.nexora` existente o crear uno nuevo.
+- Selector inicial para abrir la carpeta raíz de un proyecto Nexora o crear uno nuevo.
 - Cliente REST con ejecución HTTP real, status, headers, body, duración y tamaño de respuesta.
-- Proyectos locales `.nexora` y una petición JSON por archivo para obtener diffs claros en Git.
+- Rutas, carpetas y monitores visibles en la raíz, con un JSON por recurso para obtener diffs
+  claros en Git.
 - Carpetas persistentes, menú contextual para renombrar o eliminar rutas y guardado automático.
 - Pestañas de ruta cerrables con `Ctrl+W` sin permitir cerrar la última petición abierta.
 - Historial HTTP local con búsqueda, repetición y limpieza controlada.
@@ -72,26 +73,31 @@ ejecutarse `bun run tauri dev`.
 
 ```text
 mi-proyecto/
-└── .nexora/
-    ├── .gitignore       # excluye runtime/
-    ├── folders/         # una carpeta JSON aunque todavía no tenga rutas
-    │   └── general.json
-    ├── monitors/        # definiciones versionables, nunca incluyen secretos
-    │   └── monitor-<uuid>.json
-    ├── project.json
-    ├── runtime/         # datos e historial local, no versionados
-    │   └── http-history.json
-    └── requests/
-        └── general/
-            └── request-<uuid>.json
+├── .nexora/              # integración interna con la aplicación
+│   ├── .gitignore        # excluye runtime/
+│   ├── project.json      # identidad y versión del proyecto
+│   └── runtime/          # datos de motores e historial local
+├── folders/              # metadatos versionables de las carpetas
+│   └── general.json
+├── monitors/             # definiciones versionables, nunca incluyen secretos
+│   └── monitor-<uuid>.json
+└── requests/             # pruebas de API versionables
+    └── general/
+        └── request-<uuid>.json
 ```
+
+Las carpetas `folders/`, `monitors/` y `requests/` se pueden versionar directamente y revisar sin
+depender de Nexora. `.nexora/` queda reservado para la comunicación con la aplicación y su estado
+local. Al abrir un proyecto creado con la versión 0.1, Nexora migra las definiciones ocultas al
+nuevo formato; si ya existe un archivo distinto en el destino, cancela la migración para evitar
+sobrescribir datos.
 
 Los archivos de petición guardan referencias como `Bearer {{token}}`, no el valor de `token`.
 Al ejecutar, Nexora resuelve variables en URL, nombres y valores de query y headers, y body. Las
 referencias incompletas o sin valor producen un error antes de enviar tráfico. Nexora bloquea
 credenciales directas en headers, parámetros y campos JSON sensibles conocidos.
 
-El historial conserva un máximo de 500 ejecuciones en `runtime/`, que está ignorado por Git. Solo
+El historial conserva un máximo de 500 ejecuciones en `.nexora/runtime/`, que está ignorado por Git. Solo
 registra método, ruta sin query ni credenciales, estado y métricas; no persiste variables de sesión,
 headers, cuerpos de petición ni cuerpos de respuesta. Los monitores ejecutan peticiones guardadas
 mientras Nexora permanece abierto y utilizan los valores de sesión que existan en ese momento.
@@ -141,7 +147,7 @@ cargo build --manifest-path src-tauri/Cargo.toml --release
 ```
 
 La suite E2E abre el binario de depuración en el WebView real de Tauri mediante WebdriverIO. Crea
-un proyecto `.nexora` y una API Bun temporales, comprueba la interfaz y ejecuta operaciones reales
+un proyecto Nexora y una API Bun temporales, comprueba la interfaz y ejecuta operaciones reales
 contra los runtimes locales de MongoDB y PostgreSQL. Al terminar detiene los procesos y elimina el
 proyecto de prueba.
 
@@ -166,6 +172,10 @@ Manager:
 cargo test --manifest-path src-tauri/Cargo.toml runs_an_authenticated_project_database_end_to_end -- --ignored
 cargo test --manifest-path src-tauri/Cargo.toml runs_managed_postgresql_end_to_end -- --ignored
 ```
+
+GitHub Actions ejecuta en Windows las comprobaciones de formato, TypeScript, build frontend,
+tests Rust, compilación con la característica WebView y build de Tauri. Dependabot revisa cada
+semana las dependencias de Bun, Cargo y GitHub Actions.
 
 ## Aplicación de escritorio
 

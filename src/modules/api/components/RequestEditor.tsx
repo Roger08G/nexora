@@ -60,7 +60,7 @@ export function RequestEditor({
                     disabled={!canSave || saveState === "saving"}
                     icon={FiSave}
                     onClick={onSave}
-                    title={canSave ? "Guardar en .nexora" : "Abre un proyecto para guardar"}
+                    title={canSave ? "Guardar en requests/" : "Abre un proyecto para guardar"}
                     tone="secondary"
                 >
                     {saveState === "saving" ? "Guardando" : "Guardar"}
