@@ -2,7 +2,9 @@ mod commands;
 mod error;
 mod state;
 
-use commands::{http, mongodb, mongodb_runtime, postgresql, postgresql_runtime, projects};
+use commands::{
+    history, http, mongodb, mongodb_runtime, monitors, postgresql, postgresql_runtime, projects,
+};
 use state::AppState;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -21,6 +23,13 @@ pub fn run() {
             projects::save_request,
             projects::delete_request,
             http::execute_http,
+            history::list_history,
+            history::append_history,
+            history::delete_history_entry,
+            history::clear_history,
+            monitors::list_monitors,
+            monitors::save_monitor,
+            monitors::delete_monitor,
             mongodb::connect_mongodb,
             mongodb::disconnect_mongodb,
             mongodb_runtime::managed_mongodb_status,

@@ -1,4 +1,5 @@
 import { AppSettingsProvider } from "@/app/providers/AppSettingsProvider";
+import { HistoryProvider } from "@/app/providers/HistoryProvider";
 import { AppShell } from "@/app/layouts/AppShell";
 import { ProjectProvider, useProject } from "@/app/providers/ProjectProvider";
 import { SessionVariablesProvider } from "@/app/providers/SessionVariablesProvider";
@@ -24,7 +25,9 @@ function AppContent() {
         <>
             {project ? (
                 <SessionVariablesProvider key={project.id}>
-                    <AppShell />
+                    <HistoryProvider>
+                        <AppShell />
+                    </HistoryProvider>
                 </SessionVariablesProvider>
             ) : (
                 <ProjectStartPage />

@@ -41,6 +41,7 @@ export function RequestTabs({
                         className="request-tab__close"
                         disabled={requests.length === 1}
                         onClick={() => onClose(request.id)}
+                        title="Cerrar ruta (Ctrl+W)"
                         type="button"
                     >
                         <FiX aria-hidden="true" />

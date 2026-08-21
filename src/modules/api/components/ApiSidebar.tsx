@@ -42,7 +42,7 @@ export function ApiSidebar({
     onSelect,
 }: ApiSidebarProps) {
     const [query, setQuery] = useState("");
-    const [expanded, setExpanded] = useState<string[]>(["general"]);
+    const [expanded, setExpanded] = useState<string[]>([]);
     const [activeFolderId, setActiveFolderId] = useState("general");
     const [requestMenu, setRequestMenu] = useState<RequestMenuState | null>(null);
     const [renameTarget, setRenameTarget] = useState<SavedRequest | null>(null);
@@ -65,7 +65,11 @@ export function ApiSidebar({
 
     function selectFolder(folderId: string) {
         setActiveFolderId(folderId);
-        setExpanded((current) => (current.includes(folderId) ? current : [...current, folderId]));
+        setExpanded((current) =>
+            current.includes(folderId)
+                ? current.filter((candidate) => candidate !== folderId)
+                : [...current, folderId],
+        );
     }
 
     return (

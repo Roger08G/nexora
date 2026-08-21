@@ -5,6 +5,7 @@ import { useAppSettings } from "@/app/providers/AppSettingsProvider";
 import { useGlobalSearch } from "@/app/providers/GlobalSearchProvider";
 import { useProject } from "@/app/providers/ProjectProvider";
 import { useSessionVariables } from "@/app/providers/SessionVariablesProvider";
+import { useHistory } from "@/app/providers/HistoryProvider";
 import { ApiSidebar } from "@/modules/api/components/ApiSidebar";
 import { RequestEditor } from "@/modules/api/components/RequestEditor";
 import { RequestTabs } from "@/modules/api/components/RequestTabs";
@@ -32,6 +33,7 @@ export function ApiPage() {
     const { registerItems } = useGlobalSearch();
     const { project } = useProject();
     const { values: sessionVariables } = useSessionVariables();
+    const { record: recordHistory } = useHistory();
     const [folderSummaries, setFolderSummaries] = useState<RequestFolderSummary[]>(() => [
         DEFAULT_FOLDER,
     ]);
@@ -44,6 +46,7 @@ export function ApiPage() {
     const requestsRef = useRef(requests);
     const savedSnapshots = useRef(new Map<string, string>());
     const saveQueue = useRef(new Map<string, Promise<boolean>>());
+    const pageRef = useRef<HTMLElement>(null);
 
     useEffect(() => {
         requestsRef.current = requests;
@@ -243,6 +246,31 @@ export function ApiPage() {
         }
     }
 
+    useEffect(() => {
+        function handleCloseShortcut(event: KeyboardEvent) {
+            if (
+                event.repeat ||
+                event.altKey ||
+                event.shiftKey ||
+                (!event.ctrlKey && !event.metaKey) ||
+                event.key.toLowerCase() !== "w"
+            ) {
+                return;
+            }
+            const workspace = pageRef.current?.closest<HTMLElement>(".workspace-view");
+            if (workspace?.dataset.active !== "true") return;
+            if (document.querySelector('[aria-modal="true"]')) {
+                event.preventDefault();
+                return;
+            }
+            event.preventDefault();
+            if (openRequestIds.length > 1) void closeRequest(activeRequestId);
+        }
+
+        window.addEventListener("keydown", handleCloseShortcut);
+        return () => window.removeEventListener("keydown", handleCloseShortcut);
+    }, [activeRequestId, openRequestIds.length, settings.autoSaveRequests]);
+
     function updateActive(changes: Partial<SavedRequest>, invalidateResponse = true) {
         setRequestsAndRef((current) =>
             current.map((request) =>
@@ -262,6 +290,7 @@ export function ApiPage() {
                 settings.requestTimeoutMs,
             );
             setResponseState({ status: "success", response });
+            void recordHistory({ request: activeRequest, response, source: "api" });
             toast.success(`${activeRequest.name}: ${response.status}`, {
                 description: `${Math.round(response.durationMs)} ms · ${formatBytes(response.sizeBytes)}`,
                 id: `request-send-${activeRequest.id}`,
@@ -269,6 +298,7 @@ export function ApiPage() {
         } catch (error) {
             const message = getErrorMessage(error);
             setResponseState({ status: "error", message });
+            void recordHistory({ error: message, request: activeRequest, source: "api" });
             toast.error(`Error al ejecutar ${activeRequest.name}`, {
                 description: message,
                 id: `request-send-${activeRequest.id}`,
@@ -365,7 +395,7 @@ export function ApiPage() {
     }
 
     return (
-        <section className="module-page api-page">
+        <section className="module-page api-page" ref={pageRef}>
             <ApiSidebar
                 activeRequestId={activeRequest.id}
                 folders={folders}

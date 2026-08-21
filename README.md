@@ -13,6 +13,9 @@ El MVP local ya conecta el frontend con el núcleo Rust. Incluye:
 - Cliente REST con ejecución HTTP real, status, headers, body, duración y tamaño de respuesta.
 - Proyectos locales `.nexora` y una petición JSON por archivo para obtener diffs claros en Git.
 - Carpetas persistentes, menú contextual para renombrar o eliminar rutas y guardado automático.
+- Pestañas de ruta cerrables con `Ctrl+W` sin permitir cerrar la última petición abierta.
+- Historial HTTP local con búsqueda, repetición y limpieza controlada.
+- Monitores locales configurables, ejecución manual o periódica y registro en el historial.
 - MongoDB local administrado por proyecto y conexión opcional a servidores externos.
 - Consulta de MongoDB, creación de colecciones e inserción, edición y borrado de documentos.
 - PostgreSQL 18.6 local administrado por proyecto, con esquemas, tablas y editor SQL.
@@ -28,7 +31,7 @@ durante la sesión. El núcleo limita tiempos, respuestas HTTP, filas SQL y docu
 mantener estable la aplicación.
 
 Todavía no forman parte de este MVP los workflows API → diff de base de datos, la importación de
-cURL/OpenAPI/Postman, el historial persistente, índices MongoDB y la exportación CSV.
+cURL/OpenAPI/Postman, índices MongoDB y la exportación CSV.
 
 ## Tecnologías
 
@@ -73,8 +76,11 @@ mi-proyecto/
     ├── .gitignore       # excluye runtime/
     ├── folders/         # una carpeta JSON aunque todavía no tenga rutas
     │   └── general.json
+    ├── monitors/        # definiciones versionables, nunca incluyen secretos
+    │   └── monitor-<uuid>.json
     ├── project.json
-    ├── runtime/        # datos y logs locales, no versionados
+    ├── runtime/         # datos e historial local, no versionados
+    │   └── http-history.json
     └── requests/
         └── general/
             └── request-<uuid>.json
@@ -84,6 +90,11 @@ Los archivos de petición guardan referencias como `Bearer {{token}}`, no el val
 Al ejecutar, Nexora resuelve variables en URL, nombres y valores de query y headers, y body. Las
 referencias incompletas o sin valor producen un error antes de enviar tráfico. Nexora bloquea
 credenciales directas en headers, parámetros y campos JSON sensibles conocidos.
+
+El historial conserva un máximo de 500 ejecuciones en `runtime/`, que está ignorado por Git. Solo
+registra método, ruta sin query ni credenciales, estado y métricas; no persiste variables de sesión,
+headers, cuerpos de petición ni cuerpos de respuesta. Los monitores ejecutan peticiones guardadas
+mientras Nexora permanece abierto y utilizan los valores de sesión que existan en ese momento.
 
 ## MongoDB local administrado
 

@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::{AppError, CommandResult};
 
 const SCHEMA_VERSION: u32 = 1;
-const PROJECT_DIR: &str = ".nexora";
+pub(crate) const PROJECT_DIR: &str = ".nexora";
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -585,7 +585,7 @@ fn ensure_runtime_ignored(root: &Path) -> Result<(), AppError> {
     Ok(())
 }
 
-fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<(), AppError> {
+pub(crate) fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<(), AppError> {
     let temporary = path.with_extension("json.tmp");
     let mut contents = serde_json::to_string_pretty(value)?;
     contents.push('\n');

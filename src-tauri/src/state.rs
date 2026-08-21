@@ -1,4 +1,7 @@
-use std::{collections::HashMap, sync::Mutex};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
 
 use mongodb::Client as MongoClient;
 use reqwest::Client as HttpClient;
@@ -9,6 +12,8 @@ use crate::error::AppError;
 
 pub struct AppState {
     pub http: HttpClient,
+    pub history_io: Arc<Mutex<()>>,
+    pub monitor_io: Arc<Mutex<()>>,
     pub mongo: Mutex<HashMap<String, MongoClient>>,
     pub managed_mongo: Mutex<Option<ManagedMongoRuntime>>,
     pub managed_postgres: Mutex<Option<ManagedPostgresRuntime>>,
@@ -23,6 +28,8 @@ impl AppState {
 
         Ok(Self {
             http,
+            history_io: Arc::new(Mutex::new(())),
+            monitor_io: Arc::new(Mutex::new(())),
             mongo: Mutex::new(HashMap::new()),
             managed_mongo: Mutex::new(None),
             managed_postgres: Mutex::new(None),
