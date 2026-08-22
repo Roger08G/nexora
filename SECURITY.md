@@ -7,10 +7,11 @@ privada.
 
 ## Versiones con soporte
 
-| Versión                    | Correcciones de seguridad |
-| -------------------------- | ------------------------- |
-| `0.3.x-alpha`              | Sí                        |
-| < `0.2.x-alpha`            | No                        |
+| Versión         | Correcciones de seguridad |
+| --------------- | ------------------------- |
+| `0.4.x-alpha`   | Sí                        |
+| `0.3.x-alpha`   | Sí                        |
+| < `0.2.x-alpha` | No                        |
 
 Las versiones alpha pueden introducir cambios incompatibles cuando sean necesarios para cerrar una
 vulnerabilidad. Se recomienda reproducir el problema sobre el último commit de `main` antes de
