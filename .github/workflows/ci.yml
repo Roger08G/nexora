@@ -10,6 +10,7 @@ on:
     workflow_dispatch:
 
 permissions:
+    checks: write
     contents: read
 
 concurrency:
@@ -36,6 +37,9 @@ jobs:
 
             - name: Check formatting
               run: bun run fmt:check
+
+            - name: Audit frontend dependencies
+              run: bun run audit:frontend
 
             - name: Check GitHub configuration formatting
               run: bunx prettier --check ".github/**/*.yml"
@@ -69,7 +73,7 @@ jobs:
             - name: Set up Rust
               uses: dtolnay/rust-toolchain@stable
               with:
-                  components: rustfmt
+                  components: clippy, rustfmt
 
             - name: Cache Rust dependencies
               uses: Swatinem/rust-cache@v2
@@ -78,6 +82,15 @@ jobs:
 
             - name: Check Rust formatting
               run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
+
+            - name: Lint Rust
+              run: cargo clippy --manifest-path src-tauri/Cargo.toml --locked --all-targets --all-features -- -D warnings
+
+            - name: Audit Rust dependencies
+              uses: rustsec/audit-check@v2.0.0
+              with:
+                  token: ${{ secrets.GITHUB_TOKEN }}
+                  working-directory: src-tauri
 
             - name: Run Rust tests
               run: cargo test --manifest-path src-tauri/Cargo.toml --locked --all-targets

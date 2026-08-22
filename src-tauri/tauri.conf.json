@@ -12,6 +12,7 @@
     "app": {
         "windows": [
             {
+                "label": "main",
                 "title": "Nexora",
                 "width": 1440,
                 "height": 900,
@@ -21,13 +22,35 @@
         ],
         "security": {
             "csp": {
+                "base-uri": "'none'",
                 "default-src": "'self' customprotocol: asset:",
                 "connect-src": "ipc: http://ipc.localhost",
                 "font-src": "'self' data:",
+                "form-action": "'none'",
+                "frame-ancestors": "'none'",
                 "img-src": "'self' asset: http://asset.localhost blob: data:",
+                "object-src": "'none'",
+                "script-src": "'self'",
                 "style-src": "'self' 'unsafe-inline'"
             },
-            "devCsp": null
+            "headers": {
+                "Cross-Origin-Opener-Policy": "same-origin",
+                "Cross-Origin-Resource-Policy": "same-origin",
+                "Permissions-Policy": "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
+                "X-Content-Type-Options": "nosniff"
+            },
+            "devCsp": {
+                "base-uri": "'none'",
+                "default-src": "'self' customprotocol: asset:",
+                "connect-src": "ipc: http://ipc.localhost ws://localhost:1420",
+                "font-src": "'self' data:",
+                "form-action": "'none'",
+                "frame-ancestors": "'none'",
+                "img-src": "'self' asset: http://asset.localhost blob: data:",
+                "object-src": "'none'",
+                "script-src": "'self' 'unsafe-inline' 'unsafe-eval'",
+                "style-src": "'self' 'unsafe-inline'"
+            }
         }
     },
     "bundle": {

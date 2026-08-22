@@ -31,7 +31,13 @@ pub(crate) fn wait_for_closed_port(port: u16, timeout: Duration) {
 fn platform_netstat() -> Option<String> {
     use std::os::windows::process::CommandExt;
 
-    let output = Command::new("netstat")
+    let executable = std::env::var_os("SystemRoot")
+        .map(std::path::PathBuf::from)?
+        .join("System32/netstat.exe");
+    if !executable.is_file() {
+        return None;
+    }
+    let output = Command::new(executable)
         .args(["-ano", "-p", "tcp"])
         .creation_flags(0x0800_0000)
         .output()

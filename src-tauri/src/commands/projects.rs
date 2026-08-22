@@ -8,7 +8,10 @@ use tauri::State;
 
 use crate::{
     error::{AppError, CommandResult},
-    limits::{MAX_BODY_BYTES, MAX_HTTP_ITEMS, MAX_PROJECT_FILE_BYTES, MAX_SMALL_FILE_BYTES},
+    limits::{
+        MAX_BODY_BYTES, MAX_HTTP_ITEMS, MAX_PROJECT_FILE_BYTES, MAX_PROJECT_FOLDERS,
+        MAX_PROJECT_METRIC_ENTRIES, MAX_PROJECT_REQUESTS, MAX_SMALL_FILE_BYTES,
+    },
     state::AppState,
     storage::{
         ensure_directory, read_bytes, read_json, read_text, validate_directory,
@@ -193,12 +196,7 @@ fn lock_projects(lock: &std::sync::Mutex<()>) -> Result<std::sync::MutexGuard<'_
 }
 
 pub(crate) fn create_project_sync(root: &str, name: &str) -> Result<ProjectSummary, AppError> {
-    let name = name.trim();
-    if name.is_empty() || name.chars().count() > 80 {
-        return Err(AppError::Validation(
-            "El nombre del proyecto debe tener entre 1 y 80 caracteres".into(),
-        ));
-    }
+    let name = validated_display_name(name, "proyecto", 80)?;
 
     let root = canonical_directory(root)?;
     let project_dir = root.join(PROJECT_DIR);
@@ -223,7 +221,7 @@ pub(crate) fn create_project_sync(root: &str, name: &str) -> Result<ProjectSumma
         let manifest = ProjectManifest {
             id: uuid::Uuid::new_v4().to_string(),
             schema_version: SCHEMA_VERSION,
-            name: name.to_owned(),
+            name,
         };
         write_json_atomic(&project_dir.join("project.json"), &manifest)?;
         write_json_atomic(
@@ -294,6 +292,11 @@ fn list_request_folders_sync(project_root: &str) -> Result<Vec<RequestFolder>, A
         let folder: RequestFolder = read_json(&entry.path(), MAX_SMALL_FILE_BYTES, "La carpeta")?;
         validate_request_folder(&folder)?;
         folders.push(folder);
+        if folders.len() > MAX_PROJECT_FOLDERS {
+            return Err(AppError::Validation(format!(
+                "El proyecto supera el límite de {MAX_PROJECT_FOLDERS} carpetas"
+            )));
+        }
     }
     folders.sort_by_key(|folder| folder.name.to_lowercase());
     Ok(folders)
@@ -397,6 +400,11 @@ fn list_requests_from_root(root: &Path) -> Result<Vec<SavedRequest>, AppError> {
                 read_json(&entry.path(), MAX_PROJECT_FILE_BYTES, "La petición")?;
             validate_request(&request)?;
             requests.push(request);
+            if requests.len() > MAX_PROJECT_REQUESTS {
+                return Err(AppError::Validation(format!(
+                    "El proyecto supera el límite de {MAX_PROJECT_REQUESTS} peticiones"
+                )));
+            }
         }
     }
     Ok(requests)
@@ -433,27 +441,27 @@ fn write_request_folder(root: &Path, folder: &RequestFolder) -> Result<(), AppEr
 
 fn validate_request_folder(folder: &RequestFolder) -> Result<(), AppError> {
     validate_slug("carpeta", &folder.id)?;
-    validated_folder_name(&folder.name).map(|_| ())
+    if validated_folder_name(&folder.name)? != folder.name {
+        return Err(AppError::Validation(
+            "El nombre de la carpeta no está normalizado".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn validated_folder_name(name: &str) -> Result<String, AppError> {
-    let name = name.trim();
-    if name.is_empty() || name.chars().count() > 80 {
-        return Err(AppError::Validation(
-            "El nombre de la carpeta debe tener entre 1 y 80 caracteres".into(),
-        ));
-    }
-    Ok(name.into())
+    validated_display_name(name, "carpeta", 80)
 }
 
 fn validate_request(request: &SavedRequest) -> Result<(), AppError> {
     validate_slug("colección", &request.collection_id)?;
     validate_slug("petición", &request.id)?;
-    if request.collection_name.is_empty() || request.collection_name.chars().count() > 80 {
-        return Err(AppError::Validation("Nombre de colección no válido".into()));
-    }
-    if request.name.is_empty() || request.name.chars().count() > 120 {
-        return Err(AppError::Validation("Nombre de petición no válido".into()));
+    if validated_display_name(&request.collection_name, "colección", 80)? != request.collection_name
+        || validated_display_name(&request.name, "petición", 120)? != request.name
+    {
+        return Err(AppError::Validation(
+            "Los nombres de la petición no están normalizados".into(),
+        ));
     }
     if !matches!(
         request.method.as_str(),
@@ -499,65 +507,122 @@ fn validate_request(request: &SavedRequest) -> Result<(), AppError> {
             "Los parámetros y headers superan el límite permitido".into(),
         ));
     }
-    if let Ok(url) = reqwest::Url::parse(&request.url) {
-        if !url.username().is_empty() || url.password().is_some() {
-            return Err(AppError::Validation(
-                "No guardes credenciales dentro de la URL; utiliza variables {{nombre}}".into(),
-            ));
-        }
+    if contains_url_userinfo(&request.url)
+        || reqwest::Url::parse(&request.url)
+            .is_ok_and(|url| !url.username().is_empty() || url.password().is_some())
+    {
+        return Err(AppError::Validation(
+            "No guardes credenciales dentro de la URL; utiliza headers o variables de sesión"
+                .into(),
+        ));
+    }
+    if contains_plain_url_secret(&request.url) {
+        return Err(AppError::Validation(
+            "La URL contiene un secreto directo. Usa un parámetro con una variable de sesión"
+                .into(),
+        ));
     }
     for header in &request.headers {
-        if header.enabled
-            && is_sensitive_key(&header.key)
+        if is_sensitive_key(&header.key)
             && !header.value.trim().is_empty()
-            && !contains_variable(&header.value)
+            && !uses_secret_reference(&header.key, &header.value)
         {
-            return Err(AppError::Validation(format!(
-                "El header {} parece contener un secreto. Usa una variable como {{{{token}}}}",
-                header.key
-            )));
-        }
-    }
-    for parameter in &request.params {
-        if parameter.enabled
-            && is_sensitive_key(&parameter.key)
-            && !parameter.value.trim().is_empty()
-            && !contains_variable(&parameter.value)
-        {
-            return Err(AppError::Validation(format!(
-                "El parámetro {} parece contener un secreto. Usa una variable de sesión",
-                parameter.key
-            )));
-        }
-    }
-    if let Ok(body) = serde_json::from_str::<serde_json::Value>(&request.body) {
-        if contains_plain_json_secret(&body) {
             return Err(AppError::Validation(
-                "El body parece contener un secreto directo. Sustitúyelo por una variable {{nombre}}"
+                "Un header sensible contiene un valor directo. Usa una variable como {{token}}"
                     .into(),
             ));
         }
+    }
+    for parameter in &request.params {
+        if is_sensitive_key(&parameter.key)
+            && !parameter.value.trim().is_empty()
+            && !uses_secret_reference(&parameter.key, &parameter.value)
+        {
+            return Err(AppError::Validation(
+                "Un parámetro sensible contiene un valor directo. Usa una variable de sesión"
+                    .into(),
+            ));
+        }
+    }
+    let body_contains_secret = serde_json::from_str::<serde_json::Value>(&request.body)
+        .map_or_else(
+            |_| contains_plain_text_secret(&request.body),
+            |body| contains_plain_json_secret(&body),
+        );
+    if body_contains_secret {
+        return Err(AppError::Validation(
+            "El body parece contener un secreto directo. Sustitúyelo por una variable {{nombre}}"
+                .into(),
+        ));
     }
     Ok(())
 }
 
 fn is_sensitive_key(key: &str) -> bool {
+    let normalized = normalized_sensitive_key(key);
     matches!(
-        key.trim().to_ascii_lowercase().as_str(),
+        normalized.as_str(),
         "authorization"
-            | "proxy-authorization"
-            | "api-key"
-            | "apikey"
-            | "x-api-key"
+            | "proxyauthorization"
+            | "credential"
+            | "credentials"
             | "cookie"
-            | "password"
-            | "token"
-            | "secret"
-    )
+            | "setcookie"
+    ) || [
+        "apikey",
+        "password",
+        "passphrase",
+        "privatekey",
+        "secret",
+        "token",
+    ]
+    .iter()
+    .any(|suffix| normalized.ends_with(suffix))
 }
 
-fn contains_variable(value: &str) -> bool {
-    value.contains("{{") && value.contains("}}")
+fn normalized_sensitive_key(key: &str) -> String {
+    key.trim()
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+fn uses_secret_reference(key: &str, value: &str) -> bool {
+    let Some(literal) = template_literal(value) else {
+        return false;
+    };
+    let literal = literal.trim();
+    literal.is_empty()
+        || (matches!(
+            normalized_sensitive_key(key).as_str(),
+            "authorization" | "proxyauthorization"
+        ) && matches!(literal.to_ascii_lowercase().as_str(), "bearer" | "basic"))
+}
+
+fn template_literal(value: &str) -> Option<String> {
+    let mut literal = String::new();
+    let mut remaining = value;
+    let mut found = false;
+    while let Some(start) = remaining.find("{{") {
+        literal.push_str(&remaining[..start]);
+        let after_start = &remaining[start + 2..];
+        let end = after_start.find("}}")?;
+        let name = after_start[..end].trim();
+        if name.is_empty()
+            || name.chars().count() > 128
+            || name.chars().any(is_dangerous_display_character)
+        {
+            return None;
+        }
+        found = true;
+        remaining = &after_start[end + 2..];
+    }
+    if !found || remaining.contains("}}") {
+        return None;
+    }
+    literal.push_str(remaining);
+    Some(literal)
 }
 
 fn contains_plain_json_secret(value: &serde_json::Value) -> bool {
@@ -565,12 +630,71 @@ fn contains_plain_json_secret(value: &serde_json::Value) -> bool {
         serde_json::Value::Object(object) => object.iter().any(|(key, value)| {
             (is_sensitive_key(key)
                 && !value.is_null()
-                && !value.as_str().is_some_and(contains_variable))
+                && !value
+                    .as_str()
+                    .is_some_and(|value| uses_secret_reference(key, value)))
                 || contains_plain_json_secret(value)
         }),
         serde_json::Value::Array(values) => values.iter().any(contains_plain_json_secret),
         _ => false,
     }
+}
+
+fn contains_url_userinfo(value: &str) -> bool {
+    let Some((_, after_scheme)) = value.split_once("://") else {
+        return false;
+    };
+    after_scheme
+        .split(['/', '?', '#'])
+        .next()
+        .is_some_and(|authority| authority.contains('@'))
+}
+
+fn contains_plain_url_secret(value: &str) -> bool {
+    if let Ok(url) = reqwest::Url::parse(value) {
+        return url
+            .query_pairs()
+            .any(|(key, value)| is_sensitive_key(&key) && !uses_secret_reference(&key, &value));
+    }
+    value
+        .split_once('?')
+        .map(|(_, query)| query.split('#').next().unwrap_or_default())
+        .is_some_and(contains_plain_text_secret)
+}
+
+fn contains_plain_text_secret(value: &str) -> bool {
+    value.split(['&', ';', '\n', '\r']).any(|field| {
+        let assignment = field.split_once('=').or_else(|| field.split_once(':'));
+        assignment.is_some_and(|(key, value)| {
+            let key = key.trim_matches(|character: char| {
+                character.is_ascii_whitespace() || matches!(character, '"' | '\'' | '{' | '}')
+            });
+            is_sensitive_key(key)
+                && !value.trim().is_empty()
+                && !uses_secret_reference(key, value.trim())
+        })
+    })
+}
+
+fn validated_display_name(value: &str, label: &str, max_chars: usize) -> Result<String, AppError> {
+    let value = value.trim();
+    if value.is_empty()
+        || value.chars().count() > max_chars
+        || value.chars().any(is_dangerous_display_character)
+    {
+        return Err(AppError::Validation(format!(
+            "El nombre de {label} debe tener entre 1 y {max_chars} caracteres visibles"
+        )));
+    }
+    Ok(value.into())
+}
+
+fn is_dangerous_display_character(character: char) -> bool {
+    character.is_control()
+        || matches!(
+            character,
+            '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}' | '\u{feff}'
+        )
 }
 
 fn validate_slug(label: &str, value: &str) -> Result<(), AppError> {
@@ -617,6 +741,11 @@ fn validated_project(root: &str) -> Result<(PathBuf, ProjectManifest), AppError>
     }
 
     let mut manifest_changed = false;
+    let normalized_name = validated_display_name(&manifest.name, "proyecto", 80)?;
+    if manifest.name != normalized_name {
+        manifest.name = normalized_name;
+        manifest_changed = true;
+    }
     if manifest.schema_version == LEGACY_SCHEMA_VERSION {
         manifest.schema_version = SCHEMA_VERSION;
         manifest_changed = true;
@@ -624,6 +753,14 @@ fn validated_project(root: &str) -> Result<(PathBuf, ProjectManifest), AppError>
     if manifest.id.is_empty() {
         manifest.id = uuid::Uuid::new_v4().to_string();
         manifest_changed = true;
+    } else {
+        let normalized_id = uuid::Uuid::parse_str(&manifest.id)
+            .map_err(|_| AppError::Validation("Identificador de proyecto no válido".into()))?
+            .to_string();
+        if manifest.id != normalized_id {
+            manifest.id = normalized_id;
+            manifest_changed = true;
+        }
     }
     if manifest_changed {
         write_json_atomic(&root.join(PROJECT_DIR).join("project.json"), &manifest)?;
@@ -633,22 +770,30 @@ fn validated_project(root: &str) -> Result<(PathBuf, ProjectManifest), AppError>
 
 fn migrate_legacy_project_content(root: &Path) -> Result<(), AppError> {
     let legacy_root = root.join(PROJECT_DIR);
+    let mut inspected_entries = 0_u64;
     for directory in [FOLDERS_DIR, MONITORS_DIR, REQUESTS_DIR] {
         let source = legacy_root.join(directory);
         if source.exists() {
-            ensure_migration_compatible(&source, &root.join(directory))?;
+            ensure_migration_compatible(&source, &root.join(directory), 0, &mut inspected_entries)?;
         }
     }
+    let mut merged_entries = 0_u64;
     for directory in [FOLDERS_DIR, MONITORS_DIR, REQUESTS_DIR] {
         let source = legacy_root.join(directory);
         if source.exists() {
-            merge_legacy_directory(&source, &root.join(directory))?;
+            merge_legacy_directory(&source, &root.join(directory), 0, &mut merged_entries)?;
         }
     }
     Ok(())
 }
 
-fn ensure_migration_compatible(source: &Path, destination: &Path) -> Result<(), AppError> {
+fn ensure_migration_compatible(
+    source: &Path,
+    destination: &Path,
+    depth: usize,
+    inspected_entries: &mut u64,
+) -> Result<(), AppError> {
+    validate_migration_budget(depth, inspected_entries)?;
     let source_type = fs::symlink_metadata(source)?.file_type();
     if source_type.is_symlink() || !source_type.is_dir() {
         return Err(AppError::Validation(format!(
@@ -666,11 +811,17 @@ fn ensure_migration_compatible(source: &Path, destination: &Path) -> Result<(), 
 
     for entry in fs::read_dir(source)? {
         let entry = entry?;
+        validate_migration_budget(depth + 1, inspected_entries)?;
         let source_path = entry.path();
         let destination_path = destination.join(entry.file_name());
         let file_type = entry.file_type()?;
         if file_type.is_dir() {
-            ensure_migration_compatible(&source_path, &destination_path)?;
+            ensure_migration_compatible(
+                &source_path,
+                &destination_path,
+                depth + 1,
+                inspected_entries,
+            )?;
         } else if file_type.is_file() {
             if destination_path.exists() {
                 let destination_type = fs::symlink_metadata(&destination_path)?.file_type();
@@ -696,7 +847,13 @@ fn ensure_migration_compatible(source: &Path, destination: &Path) -> Result<(), 
     Ok(())
 }
 
-fn merge_legacy_directory(source: &Path, destination: &Path) -> Result<(), AppError> {
+fn merge_legacy_directory(
+    source: &Path,
+    destination: &Path,
+    depth: usize,
+    merged_entries: &mut u64,
+) -> Result<(), AppError> {
+    validate_migration_budget(depth, merged_entries)?;
     if !destination.exists() {
         fs::rename(source, destination)?;
         return Ok(());
@@ -704,10 +861,11 @@ fn merge_legacy_directory(source: &Path, destination: &Path) -> Result<(), AppEr
 
     for entry in fs::read_dir(source)? {
         let entry = entry?;
+        validate_migration_budget(depth + 1, merged_entries)?;
         let source_path = entry.path();
         let destination_path = destination.join(entry.file_name());
         if entry.file_type()?.is_dir() {
-            merge_legacy_directory(&source_path, &destination_path)?;
+            merge_legacy_directory(&source_path, &destination_path, depth + 1, merged_entries)?;
         } else if destination_path.exists() {
             fs::remove_file(source_path)?;
         } else {
@@ -715,6 +873,21 @@ fn merge_legacy_directory(source: &Path, destination: &Path) -> Result<(), AppEr
         }
     }
     fs::remove_dir(source)?;
+    Ok(())
+}
+
+fn validate_migration_budget(depth: usize, entries: &mut u64) -> Result<(), AppError> {
+    if depth > 4 {
+        return Err(AppError::Validation(
+            "La estructura heredada del proyecto es demasiado profunda".into(),
+        ));
+    }
+    *entries = entries.saturating_add(1);
+    if *entries > MAX_PROJECT_METRIC_ENTRIES {
+        return Err(AppError::Validation(
+            "La migración contiene demasiados elementos".into(),
+        ));
+    }
     Ok(())
 }
 
@@ -778,20 +951,21 @@ struct ProjectMetrics {
     bytes: u64,
     files: u64,
     requests: u64,
+    scanned_entries: u64,
 }
 
 fn project_metrics(root: &Path) -> Result<ProjectMetrics, AppError> {
     let mut metrics = ProjectMetrics::default();
-    collect_metrics(&root.join(PROJECT_DIR), false, &mut metrics)?;
+    collect_metrics(&root.join(PROJECT_DIR), false, 0, true, &mut metrics)?;
     for directory in [FOLDERS_DIR, MONITORS_DIR] {
         let path = root.join(directory);
         if path.is_dir() {
-            collect_metrics(&path, false, &mut metrics)?;
+            collect_metrics(&path, false, 0, false, &mut metrics)?;
         }
     }
     let requests = root.join(REQUESTS_DIR);
     if requests.is_dir() {
-        collect_metrics(&requests, true, &mut metrics)?;
+        collect_metrics(&requests, true, 0, false, &mut metrics)?;
     }
     Ok(metrics)
 }
@@ -799,15 +973,31 @@ fn project_metrics(root: &Path) -> Result<ProjectMetrics, AppError> {
 fn collect_metrics(
     directory: &Path,
     inside_requests: bool,
+    depth: usize,
+    skip_runtime: bool,
     metrics: &mut ProjectMetrics,
 ) -> Result<(), AppError> {
+    if depth > 4 {
+        return Err(AppError::Validation(
+            "La estructura del proyecto es demasiado profunda".into(),
+        ));
+    }
     for entry in fs::read_dir(directory)? {
         let entry = entry?;
+        if skip_runtime && depth == 0 && entry.file_name() == "runtime" {
+            continue;
+        }
+        metrics.scanned_entries = metrics.scanned_entries.saturating_add(1);
+        if metrics.scanned_entries > MAX_PROJECT_METRIC_ENTRIES {
+            return Err(AppError::Validation(format!(
+                "El proyecto supera el límite de {MAX_PROJECT_METRIC_ENTRIES} elementos"
+            )));
+        }
         let file_type = entry.file_type()?;
         let path = entry.path();
         let is_requests = inside_requests || entry.file_name() == "requests";
         if file_type.is_dir() {
-            collect_metrics(&path, is_requests, metrics)?;
+            collect_metrics(&path, is_requests, depth + 1, false, metrics)?;
         } else if file_type.is_file() {
             metrics.files = metrics.files.saturating_add(1);
             metrics.bytes = metrics.bytes.saturating_add(entry.metadata()?.len());
@@ -875,6 +1065,19 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(root.join(".nexora/.gitignore")).unwrap(),
             "runtime/\n"
+        );
+        std::fs::create_dir_all(root.join(".nexora/runtime/mongodb/data")).unwrap();
+        std::fs::write(
+            root.join(".nexora/runtime/mongodb/data/database.bin"),
+            vec![0_u8; 2 * 1024 * 1024],
+        )
+        .unwrap();
+        assert!(
+            open_project_sync(root.to_str().unwrap())
+                .unwrap()
+                .project_bytes
+                < 2 * 1024 * 1024,
+            "los datos locales no deben ralentizar la carga del proyecto"
         );
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -1026,8 +1229,38 @@ mod tests {
             body: String::new(),
         };
         assert!(save_request_sync(root.to_str().unwrap(), request.clone()).is_err());
+        request.headers[0].enabled = false;
+        assert!(save_request_sync(root.to_str().unwrap(), request.clone()).is_err());
+        request.headers[0].enabled = true;
+        request.headers[0].value = "Bearer secreto-{{token}}".into();
+        assert!(save_request_sync(root.to_str().unwrap(), request.clone()).is_err());
         request.headers[0].value = "Bearer {{token}}".into();
+        request.body = r#"{"client_secret":"directo-{{token}}"}"#.into();
+        assert!(save_request_sync(root.to_str().unwrap(), request.clone()).is_err());
+        request.body = r#"{"client_secret":"{{clientSecret}}"}"#.into();
+        request.url = "http://user:secret@{{host}}/private".into();
+        assert!(save_request_sync(root.to_str().unwrap(), request.clone()).is_err());
+        request.url = "{{baseUrl}}/private?access_token=directo".into();
+        assert!(save_request_sync(root.to_str().unwrap(), request.clone()).is_err());
+        request.url = "{{baseUrl}}/private?access_token={{accessToken}}".into();
+        request.body = "password=directo".into();
+        assert!(save_request_sync(root.to_str().unwrap(), request.clone()).is_err());
+        request.body = "password={{password}}".into();
         assert!(save_request_sync(root.to_str().unwrap(), request).is_ok());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn rejects_tampered_project_identity() {
+        let root = temporary_directory();
+        create_project_sync(root.to_str().unwrap(), "Prueba").unwrap();
+        let path = root.join(".nexora/project.json");
+        let mut manifest: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        manifest["id"] = "identidad-manipulada".into();
+        super::write_json_atomic(&path, &manifest).unwrap();
+
+        assert!(open_project_sync(root.to_str().unwrap()).is_err());
         std::fs::remove_dir_all(root).unwrap();
     }
 }

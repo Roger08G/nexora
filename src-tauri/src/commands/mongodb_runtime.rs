@@ -7,7 +7,7 @@ use std::{
 };
 
 use keyring::Entry;
-use mongodb::{bson::doc, Client};
+use mongodb::{bson::doc, options::ClientOptions, Client};
 use serde::Serialize;
 use tauri::State;
 use uuid::Uuid;
@@ -155,6 +155,7 @@ pub async fn start_managed_mongodb(
     state: State<'_, AppState>,
     project_root: String,
 ) -> CommandResult<ManagedMongoConnection> {
+    let _lifecycle = state.managed_mongo_lifecycle.lock().await;
     start_managed_internal(&state, &project_root)
         .await
         .map_err(Into::into)
@@ -309,6 +310,7 @@ fn mongo_lock_process_id(data_path: &Path) -> Option<u32> {
 
 #[tauri::command]
 pub async fn stop_managed_mongodb(state: State<'_, AppState>) -> CommandResult<()> {
+    let _lifecycle = state.managed_mongo_lifecycle.lock().await;
     stop_managed_internal(&state).await.map_err(Into::into)
 }
 
@@ -355,7 +357,7 @@ async fn active_connection(
     }))
 }
 
-async fn stop_managed_internal(state: &AppState) -> Result<(), AppError> {
+pub(crate) async fn stop_managed_internal(state: &AppState) -> Result<(), AppError> {
     let runtime = state
         .managed_mongo
         .lock()
@@ -500,8 +502,8 @@ fn free_loopback_port() -> Result<u16, AppError> {
 }
 
 async fn bootstrap_user(port: u16, password: &str) -> Result<(), AppError> {
-    let client = Client::with_uri_str(format!(
-        "mongodb://127.0.0.1:{port}/?directConnection=true&serverSelectionTimeoutMS=5000"
+    let client = bounded_local_client(&format!(
+        "mongodb://127.0.0.1:{port}/?directConnection=true"
     ))
     .await?;
     client
@@ -516,10 +518,19 @@ async fn bootstrap_user(port: u16, password: &str) -> Result<(), AppError> {
 }
 
 async fn authenticated_client(port: u16, password: &str) -> Result<Client, AppError> {
-    Ok(Client::with_uri_str(format!(
-        "mongodb://{MANAGED_USERNAME}:{password}@127.0.0.1:{port}/?authSource=admin&directConnection=true&serverSelectionTimeoutMS=5000&connectTimeoutMS=3000"
+    bounded_local_client(&format!(
+        "mongodb://{MANAGED_USERNAME}:{password}@127.0.0.1:{port}/?authSource=admin&directConnection=true"
     ))
-    .await?)
+    .await
+}
+
+async fn bounded_local_client(uri: &str) -> Result<Client, AppError> {
+    let mut options = ClientOptions::parse(uri).await?;
+    options.connect_timeout = Some(Duration::from_secs(3));
+    options.server_selection_timeout = Some(Duration::from_secs(5));
+    options.max_connecting = Some(2);
+    options.max_pool_size = Some(10);
+    Ok(Client::with_options(options)?)
 }
 
 fn startup_error(runtime: &ManagedMongoRuntime, path: &Path) -> String {

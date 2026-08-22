@@ -1,6 +1,6 @@
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex},
+    sync::{atomic::AtomicUsize, Arc, Mutex},
     time::Duration,
 };
 
@@ -17,8 +17,11 @@ pub struct AppState {
     pub monitor_io: Arc<Mutex<()>>,
     pub project_io: Arc<Mutex<()>>,
     pub mongo: Mutex<HashMap<String, MongoClient>>,
+    pub mongo_connect_attempts: AtomicUsize,
     pub managed_mongo: Mutex<Option<ManagedMongoRuntime>>,
+    pub managed_mongo_lifecycle: tokio::sync::Mutex<()>,
     pub managed_postgres: Mutex<Option<ManagedPostgresRuntime>>,
+    pub managed_postgres_lifecycle: tokio::sync::Mutex<()>,
 }
 
 impl AppState {
@@ -38,8 +41,11 @@ impl AppState {
             monitor_io: Arc::new(Mutex::new(())),
             project_io: Arc::new(Mutex::new(())),
             mongo: Mutex::new(HashMap::new()),
+            mongo_connect_attempts: AtomicUsize::new(0),
             managed_mongo: Mutex::new(None),
+            managed_mongo_lifecycle: tokio::sync::Mutex::new(()),
             managed_postgres: Mutex::new(None),
+            managed_postgres_lifecycle: tokio::sync::Mutex::new(()),
         })
     }
 }

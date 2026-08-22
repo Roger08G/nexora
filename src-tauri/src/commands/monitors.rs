@@ -10,7 +10,7 @@ use tauri::State;
 use crate::{
     commands::projects::project_runtime_context,
     error::{AppError, CommandResult},
-    limits::MAX_SMALL_FILE_BYTES,
+    limits::{MAX_MONITORS, MAX_SMALL_FILE_BYTES},
     state::AppState,
     storage::{ensure_directory, read_json, write_json_atomic},
 };
@@ -92,6 +92,11 @@ fn list_monitors_sync(project_root: &str) -> Result<Vec<LocalMonitor>, AppError>
             read_json(&entry.path(), MAX_SMALL_FILE_BYTES, "El monitor local")?;
         validate_monitor(&monitor)?;
         monitors.push(monitor);
+        if monitors.len() > MAX_MONITORS {
+            return Err(AppError::Validation(format!(
+                "El proyecto supera el límite de {MAX_MONITORS} monitores"
+            )));
+        }
     }
     monitors.sort_by_key(|monitor| monitor.name.to_lowercase());
     Ok(monitors)

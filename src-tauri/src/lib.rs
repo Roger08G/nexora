@@ -8,6 +8,7 @@ use commands::{
     history, http, mongodb, mongodb_runtime, monitors, postgresql, postgresql_runtime, projects,
 };
 use state::AppState;
+use tauri::Manager;
 
 pub fn build_app<R: tauri::Runtime>(
     builder: tauri::Builder<R>,
@@ -68,5 +69,15 @@ pub fn run() {
 
     build_app(builder, tauri::generate_context!())
         .expect("failed to initialize Nexora")
-        .run(|_, _| {});
+        .run(|app, event| {
+            if matches!(event, tauri::RunEvent::ExitRequested { .. }) {
+                let state = app.state::<AppState>();
+                tauri::async_runtime::block_on(async {
+                    let _mongo_lifecycle = state.managed_mongo_lifecycle.lock().await;
+                    let _ = mongodb_runtime::stop_managed_internal(&state).await;
+                    let _postgres_lifecycle = state.managed_postgres_lifecycle.lock().await;
+                    let _ = postgresql_runtime::stop_managed_internal(&state).await;
+                });
+            }
+        });
 }

@@ -271,7 +271,11 @@ fn csv_value(value: Option<&Value>) -> String {
 }
 
 fn prevent_spreadsheet_formula(value: &str) -> String {
-    if value.starts_with(['=', '+', '-', '@', '\t', '\r']) {
+    let first_significant = value
+        .trim_start_matches(|character: char| character.is_ascii_whitespace())
+        .chars()
+        .next();
+    if first_significant.is_some_and(|character| matches!(character, '=' | '+' | '-' | '@')) {
         format!("'{value}")
     } else {
         value.into()
@@ -537,11 +541,17 @@ mod tests {
         std::fs::create_dir(&root).unwrap();
         let path = root.join("resultado.csv");
         export_csv_internal(PostgresCsvInput {
-            columns: vec!["name".into(), "note".into(), "total".into()],
+            columns: vec![
+                "name".into(),
+                "note".into(),
+                "spaced".into(),
+                "total".into(),
+            ],
             path: path.to_string_lossy().into_owned(),
             rows: vec![serde_json::json!({
                 "name": "Nexora",
                 "note": "=1+1, \"quoted\"",
+                "spaced": "  +SUM(A1:A2)",
                 "total": 42
             })],
         })
@@ -549,7 +559,7 @@ mod tests {
         let contents = std::fs::read_to_string(&path).unwrap();
         assert_eq!(
             contents,
-            "\u{feff}name,note,total\r\nNexora,\"'=1+1, \"\"quoted\"\"\",42\r\n"
+            "\u{feff}name,note,spaced,total\r\nNexora,\"'=1+1, \"\"quoted\"\"\",'  +SUM(A1:A2),42\r\n"
         );
         std::fs::remove_dir_all(root).unwrap();
     }

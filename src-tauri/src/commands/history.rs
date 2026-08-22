@@ -117,6 +117,14 @@ fn list_history_sync(project_root: &str) -> Result<Vec<HistoryEntry>, AppError> 
     }
     let mut entries: Vec<HistoryEntry> =
         read_json(&path, MAX_HISTORY_FILE_BYTES, "El historial HTTP")?;
+    if entries.len() > MAX_HISTORY_ENTRIES {
+        return Err(AppError::Validation(
+            "El historial HTTP contiene demasiadas entradas".into(),
+        ));
+    }
+    for entry in &entries {
+        validate_stored_entry(entry)?;
+    }
     entries.sort_by_key(|entry| std::cmp::Reverse(entry.executed_at_ms));
     Ok(entries)
 }
@@ -184,34 +192,77 @@ fn history_path(project_root: &str) -> Result<PathBuf, AppError> {
 
 fn validate_input(input: &HistoryEntryInput) -> Result<(), AppError> {
     validate_id(&input.request_id)?;
-    if input.request_name.trim().is_empty() || input.request_name.chars().count() > 120 {
+    validate_history_fields(
+        &input.request_name,
+        &input.method,
+        &input.url,
+        &input.source,
+        &input.status_text,
+        input.error.as_deref(),
+    )
+}
+
+fn validate_stored_entry(entry: &HistoryEntry) -> Result<(), AppError> {
+    validate_id(&entry.id)?;
+    validate_id(&entry.request_id)?;
+    validate_history_fields(
+        &entry.request_name,
+        &entry.method,
+        &entry.url,
+        &entry.source,
+        &entry.status_text,
+        entry.error.as_deref(),
+    )?;
+    if sanitized_url(&entry.url) != entry.url {
+        return Err(AppError::Validation(
+            "El historial contiene una URL no saneada".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_history_fields(
+    request_name: &str,
+    method: &str,
+    url: &str,
+    source: &str,
+    status_text: &str,
+    error: Option<&str>,
+) -> Result<(), AppError> {
+    if request_name.trim().is_empty()
+        || request_name.chars().count() > 120
+        || request_name.chars().any(char::is_control)
+    {
         return Err(AppError::Validation(
             "Nombre de petición no válido para el historial".into(),
         ));
     }
     if !matches!(
-        input.method.trim().to_ascii_uppercase().as_str(),
+        method.trim().to_ascii_uppercase().as_str(),
         "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "HEAD" | "OPTIONS"
     ) {
         return Err(AppError::Validation(
             "Método HTTP no válido para el historial".into(),
         ));
     }
-    if input.url.trim().is_empty() || input.url.chars().count() > 8_192 {
+    if url.trim().is_empty() || url.chars().count() > 8_192 || url.chars().any(char::is_control) {
         return Err(AppError::Validation(
             "URL no válida para el historial".into(),
         ));
     }
-    if !matches!(input.source.as_str(), "api" | "monitor") {
+    if !matches!(source, "api" | "monitor") {
         return Err(AppError::Validation(
             "Origen de historial no soportado".into(),
         ));
     }
-    if input
-        .error
-        .as_ref()
-        .is_some_and(|error| error.chars().count() > MAX_ERROR_LENGTH)
-    {
+    if status_text.chars().count() > 120 || status_text.chars().any(char::is_control) {
+        return Err(AppError::Validation(
+            "Estado HTTP no válido para el historial".into(),
+        ));
+    }
+    if error.is_some_and(|error| {
+        error.chars().count() > MAX_ERROR_LENGTH || error.chars().any(char::is_control)
+    }) {
         return Err(AppError::Validation(
             "El error de historial es demasiado largo".into(),
         ));

@@ -45,8 +45,8 @@ impl From<AppError> for CommandError {
             AppError::Io(error) => ("io_error", error.to_string()),
             AppError::Serialization(error) => ("serialization_error", error.to_string()),
             AppError::Http(error) => ("http_error", public_http_error(&error)),
-            AppError::Mongo(error) => ("mongodb_error", error.to_string()),
-            AppError::Postgres(error) => ("postgresql_error", error.to_string()),
+            AppError::Mongo(error) => ("mongodb_error", public_mongodb_error(&error)),
+            AppError::Postgres(error) => ("postgresql_error", public_postgresql_error(&error)),
             AppError::Credential(message) => ("credential_error", message),
             AppError::Internal(message) => ("internal_error", message),
         };
@@ -55,6 +55,42 @@ impl From<AppError> for CommandError {
             code,
             message: sanitize_message(&message),
         }
+    }
+}
+
+fn public_mongodb_error(error: &mongodb::error::Error) -> String {
+    let message = error.to_string().to_ascii_lowercase();
+    if message.contains("duplicate key") || message.contains("e11000") {
+        "MongoDB rechazó la escritura porque ya existe una clave única".into()
+    } else if message.contains("unauthorized") || message.contains("error code 13") {
+        "MongoDB rechazó la operación porque la conexión no tiene permisos".into()
+    } else if message.contains("timed out") || message.contains("server selection") {
+        "MongoDB no respondió dentro del tiempo permitido".into()
+    } else {
+        "MongoDB no pudo completar la operación".into()
+    }
+}
+
+fn public_postgresql_error(error: &tokio_postgres::Error) -> String {
+    let Some(database_error) = error.as_db_error() else {
+        return "PostgreSQL no pudo completar la operación".into();
+    };
+    use tokio_postgres::error::SqlState;
+    match *database_error.code() {
+        SqlState::UNIQUE_VIOLATION => {
+            "PostgreSQL rechazó la escritura porque ya existe una clave única".into()
+        }
+        SqlState::FOREIGN_KEY_VIOLATION => {
+            "PostgreSQL rechazó la escritura por una referencia inexistente".into()
+        }
+        SqlState::INSUFFICIENT_PRIVILEGE => {
+            "PostgreSQL rechazó la operación por falta de permisos".into()
+        }
+        SqlState::QUERY_CANCELED => "PostgreSQL canceló la consulta por tiempo o petición".into(),
+        _ => format!(
+            "PostgreSQL rechazó la operación (SQLSTATE {})",
+            database_error.code().code()
+        ),
     }
 }
 

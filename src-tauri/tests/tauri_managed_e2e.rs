@@ -174,6 +174,35 @@ fn managed_postgresql_crud_runs_end_to_end_through_tauri_ipc() {
             }),
         )
     };
+    let role = execute(
+        "SELECT rolcanlogin, rolinherit, rolsuper, rolcreatedb, rolcreaterole, rolreplication, \
+         rolbypassrls, pg_has_role(current_user, 'nexora_admin', 'MEMBER') AS admin_member \
+         FROM pg_roles WHERE rolname = current_user",
+        false,
+    );
+    let role = &role["rows"][0];
+    assert_eq!(role["rolcanlogin"], true);
+    for capability in [
+        "rolinherit",
+        "rolsuper",
+        "rolcreatedb",
+        "rolcreaterole",
+        "rolreplication",
+        "rolbypassrls",
+        "admin_member",
+    ] {
+        assert_eq!(role[capability], false, "el rol conserva {capability}");
+    }
+    app.error(
+        "execute_postgresql",
+        json!({
+            "allowWrite": true,
+            "connectionId": connection_id,
+            "rowLimit": 500,
+            "sql": "SET ROLE nexora_admin"
+        }),
+        "postgresql_error",
+    );
     execute(
         "CREATE TABLE users (id integer PRIMARY KEY, name text NOT NULL, active boolean NOT NULL)",
         true,

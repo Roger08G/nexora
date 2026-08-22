@@ -13,7 +13,7 @@ export function createProjectFixture(root: string) {
     mkdirSync(join(root, "requests", "mutations"), { recursive: true });
 
     writeJson(join(nexora, "project.json"), {
-        id: "nexora-webview-e2e",
+        id: "00000000-0000-4000-8000-0000000000e2",
         name: "Nexora WebView E2E",
         schemaVersion: 2,
     });

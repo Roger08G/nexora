@@ -9,11 +9,13 @@
         "build": "tsc && vite build",
         "build:e2e": "tsc && vite build --mode e2e",
         "build:e2e:app": "tauri build --debug --no-bundle --features e2e --config src-tauri/tauri.e2e.conf.json",
+        "audit:frontend": "bun audit --ignore GHSA-jmr9-qjv8-65gv && bun run verify:extract-zip",
         "typecheck": "tsc --noEmit",
         "preview": "vite preview",
         "tauri": "tauri",
         "test:e2e": "bun run build:e2e:app && wdio run e2e/wdio.conf.ts",
         "test:e2e:run": "wdio run e2e/wdio.conf.ts",
+        "verify:extract-zip": "bun scripts/security/verify-extract-zip-patch.mjs",
         "fmt": "prettier --write --config .prettierrc --ignore-path .prettierignore .prettierrc \"**/*.{json,md,mjs,js,ts,tsx,jsx}\"",
         "fmt:check": "prettier --check --config .prettierrc --ignore-path .prettierignore .prettierrc \"**/*.{json,md,mjs,js,ts,tsx,jsx}\""
     },
@@ -45,5 +47,13 @@
         "prettier": "^3.8.3",
         "typescript": "~5.8.3",
         "vite": "^7.0.4"
+    },
+    "overrides": {
+        "deepmerge-ts": "8.0.1",
+        "nanoid": "3.3.18",
+        "serialize-javascript": "7.1.0"
+    },
+    "patchedDependencies": {
+        "extract-zip@2.0.1": "patches/extract-zip@2.0.1.patch"
     }
 }

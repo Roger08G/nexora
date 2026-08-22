@@ -6,7 +6,10 @@ use mongodb::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::time::Duration;
+use std::{
+    sync::atomic::{AtomicUsize, Ordering},
+    time::Duration,
+};
 use tauri::State;
 use uuid::Uuid;
 
@@ -17,9 +20,11 @@ use crate::{
 };
 
 const MAX_ACTIVE_CONNECTIONS: usize = 16;
+const MAX_CONNECT_ATTEMPTS: usize = 4;
 const MAX_DOCUMENTS: i64 = 200;
 const MAX_INDEXES: usize = 1_000;
 const MONGO_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const MONGO_OPERATION_TIMEOUT: Duration = Duration::from_secs(30);
 const MONGO_MAX_POOL_SIZE: u32 = 10;
 
 #[derive(Debug, Deserialize)]
@@ -125,6 +130,19 @@ pub async fn connect_mongodb(
     state: State<'_, AppState>,
     input: MongoConnectionInput,
 ) -> CommandResult<MongoConnectionOutput> {
+    let _attempt = acquire_connect_attempt(&state.mongo_connect_attempts)?;
+    if state
+        .mongo
+        .lock()
+        .map_err(|_| AppError::Internal("El estado de MongoDB está bloqueado".into()))?
+        .len()
+        >= MAX_ACTIVE_CONNECTIONS
+    {
+        return Err(AppError::Conflict(format!(
+            "Nexora admite hasta {MAX_ACTIVE_CONNECTIONS} conexiones MongoDB activas"
+        ))
+        .into());
+    }
     let uri = input.uri.trim();
     if uri.len() > MAX_URL_BYTES
         || !(uri.starts_with("mongodb://") || uri.starts_with("mongodb+srv://"))
@@ -153,6 +171,7 @@ pub async fn connect_mongodb(
         .unwrap_or(MONGO_MAX_POOL_SIZE)
         .clamp(1, MONGO_MAX_POOL_SIZE);
     options.max_pool_size = Some(max_pool_size);
+    options.max_connecting = Some(options.max_connecting.unwrap_or(2).clamp(1, 2));
     options.min_pool_size = options.min_pool_size.map(|size| size.min(max_pool_size));
     let client = Client::with_options(options).map_err(mongo_error)?;
     client
@@ -237,6 +256,7 @@ pub async fn list_mongodb_indexes(
         .database(&database)
         .collection::<Document>(&collection)
         .list_indexes()
+        .max_time(MONGO_OPERATION_TIMEOUT)
         .await
         .map_err(mongo_error)?;
     let mut indexes = Vec::new();
@@ -296,7 +316,10 @@ pub async fn find_mongodb(
     let filter = parse_document(&input.filter, "filtro")?;
     let limit = input.limit.unwrap_or(20).clamp(1, MAX_DOCUMENTS);
 
-    let mut action = collection.find(filter).limit(limit);
+    let mut action = collection
+        .find(filter)
+        .limit(limit)
+        .max_time(MONGO_OPERATION_TIMEOUT);
     if let Some(projection) = parse_optional_document(input.projection, "proyección")? {
         action = action.projection(projection);
     }
@@ -405,6 +428,27 @@ fn mongo_client(state: &AppState, connection_id: &str) -> Result<Client, AppErro
         .get(connection_id)
         .cloned()
         .ok_or_else(|| AppError::NotFound("La conexión MongoDB ya no está activa".into()))
+}
+
+struct ConnectAttempt<'a>(&'a AtomicUsize);
+
+impl Drop for ConnectAttempt<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+fn acquire_connect_attempt(counter: &AtomicUsize) -> Result<ConnectAttempt<'_>, AppError> {
+    counter
+        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+            (current < MAX_CONNECT_ATTEMPTS).then_some(current + 1)
+        })
+        .map_err(|_| {
+            AppError::Conflict(format!(
+                "Nexora admite hasta {MAX_CONNECT_ATTEMPTS} conexiones MongoDB simultáneas"
+            ))
+        })?;
+    Ok(ConnectAttempt(counter))
 }
 
 fn parse_document(value: &str, label: &str) -> Result<Document, AppError> {

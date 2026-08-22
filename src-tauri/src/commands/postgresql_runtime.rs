@@ -26,7 +26,9 @@ use crate::{
 };
 
 pub(crate) const MANAGED_DATABASE: &str = "nexora";
-pub(crate) const MANAGED_USERNAME: &str = "nexora_local";
+pub(crate) const MANAGED_USERNAME: &str = "nexora_app";
+const MANAGED_ADMIN_USERNAME: &str = "nexora_admin";
+const LEGACY_ADMIN_USERNAME: &str = "nexora_local";
 const KEYRING_SERVICE: &str = "Nexora Managed PostgreSQL";
 const PREFERRED_POSTGRESQL_VERSION: &str = "18.6";
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(20);
@@ -161,6 +163,7 @@ pub async fn start_managed_postgresql(
     state: State<'_, AppState>,
     project_root: String,
 ) -> CommandResult<ManagedPostgresConnection> {
+    let _lifecycle = state.managed_postgres_lifecycle.lock().await;
     start_managed_internal(&state, &project_root)
         .await
         .map_err(Into::into)
@@ -246,7 +249,12 @@ async fn recover_existing_postgres(
     if !process_owns_loopback_port(process_id, port) {
         return Ok(None);
     }
-    let client = connect_client(port, password, "postgres")
+    ensure_managed_database(port, password).await.map_err(|_| {
+        AppError::Credential(
+            "PostgreSQL ya está activo, pero Nexora no pudo recuperar su sesión local".into(),
+        )
+    })?;
+    let client = connect_client(port, password, MANAGED_DATABASE)
         .await
         .map_err(|_| {
             AppError::Credential(
@@ -258,7 +266,6 @@ async fn recover_existing_postgres(
             "PostgreSQL ya está activo, pero Nexora no pudo recuperar su sesión local".into(),
         )
     })?;
-    ensure_managed_database(port, password).await?;
 
     Ok(Some(ManagedPostgresRuntime {
         child: None,
@@ -289,6 +296,7 @@ fn postmaster_process(data_path: &Path) -> Option<(u32, u16)> {
 
 #[tauri::command]
 pub async fn stop_managed_postgresql(state: State<'_, AppState>) -> CommandResult<()> {
+    let _lifecycle = state.managed_postgres_lifecycle.lock().await;
     stop_managed_internal(&state).await.map_err(Into::into)
 }
 
@@ -436,6 +444,22 @@ fn initialize_cluster(
     data_path: &Path,
     password: &str,
 ) -> Result<(), AppError> {
+    initialize_cluster_as(
+        initdb,
+        runtime_root,
+        data_path,
+        password,
+        MANAGED_ADMIN_USERNAME,
+    )
+}
+
+fn initialize_cluster_as(
+    initdb: &Path,
+    runtime_root: &Path,
+    data_path: &Path,
+    password: &str,
+    username: &str,
+) -> Result<(), AppError> {
     let password_file = runtime_root.join(format!(".initdb-password-{}.tmp", Uuid::new_v4()));
     let mut password_output = OpenOptions::new()
         .create_new(true)
@@ -449,7 +473,7 @@ fn initialize_cluster(
         .arg("--pgdata")
         .arg(external_process_path(data_path))
         .arg("--username")
-        .arg(MANAGED_USERNAME)
+        .arg(username)
         .arg("--pwfile")
         .arg(&password_file)
         .arg("--auth-host=scram-sha-256")
@@ -548,15 +572,22 @@ fn wait_until_port_ready(
 }
 
 async fn wait_for_authenticated_server(port: u16, password: &str) -> Result<(), AppError> {
+    validate_managed_password(password)?;
     let started = Instant::now();
     let mut last_error = None;
     while started.elapsed() < STARTUP_TIMEOUT {
-        match connect_client(port, password, "postgres").await {
-            Ok(client) => {
-                client.simple_query("SELECT 1").await?;
-                return Ok(());
+        for username in [
+            MANAGED_ADMIN_USERNAME,
+            LEGACY_ADMIN_USERNAME,
+            MANAGED_USERNAME,
+        ] {
+            match connect_client_as(port, password, "postgres", username).await {
+                Ok(client) => {
+                    client.simple_query("SELECT 1").await?;
+                    return Ok(());
+                }
+                Err(error) => last_error = Some(error.to_string()),
             }
-            Err(error) => last_error = Some(error.to_string()),
         }
         tokio::time::sleep(Duration::from_millis(150)).await;
     }
@@ -567,28 +598,219 @@ async fn wait_for_authenticated_server(port: u16, password: &str) -> Result<(), 
 }
 
 async fn ensure_managed_database(port: u16, password: &str) -> Result<(), AppError> {
-    let client = connect_client(port, password, "postgres").await?;
-    let exists = client
+    validate_managed_password(password)?;
+    let admin = managed_admin_client(port, password).await?;
+    let role_password = format!("'{password}'");
+    let app_role_exists = admin
+        .query_opt(
+            "SELECT 1 FROM pg_roles WHERE rolname = $1",
+            &[&MANAGED_USERNAME],
+        )
+        .await?
+        .is_some();
+    let legacy_role_exists = admin
+        .query_opt(
+            "SELECT 1 FROM pg_roles WHERE rolname = $1",
+            &[&LEGACY_ADMIN_USERNAME],
+        )
+        .await?
+        .is_some();
+    let role_statement = if app_role_exists {
+        format!(
+            "ALTER ROLE {MANAGED_USERNAME} WITH LOGIN NOSUPERUSER NOINHERIT NOCREATEDB \
+             NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD {role_password}"
+        )
+    } else {
+        format!(
+            "CREATE ROLE {MANAGED_USERNAME} WITH LOGIN NOSUPERUSER NOINHERIT NOCREATEDB \
+             NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD {role_password}"
+        )
+    };
+    admin.batch_execute(&role_statement).await?;
+    admin
+        .batch_execute(
+            "REVOKE pg_read_server_files, pg_write_server_files, pg_execute_server_program \
+             FROM nexora_app; REVOKE nexora_admin FROM nexora_app",
+        )
+        .await?;
+    if legacy_role_exists {
+        admin
+            .batch_execute("REVOKE nexora_local FROM nexora_app")
+            .await?;
+    }
+
+    let database_exists = admin
         .query_opt(
             "SELECT 1 FROM pg_database WHERE datname = $1",
             &[&MANAGED_DATABASE],
         )
         .await?
         .is_some();
-    if !exists {
-        client
-            .simple_query("CREATE DATABASE nexora ENCODING 'UTF8'")
+    if database_exists {
+        admin
+            .simple_query("ALTER DATABASE nexora OWNER TO nexora_app")
             .await?;
+    } else {
+        admin
+            .simple_query("CREATE DATABASE nexora OWNER nexora_app ENCODING 'UTF8'")
+            .await?;
+    }
+    if legacy_role_exists {
+        let database_admin =
+            connect_client_as(port, password, MANAGED_DATABASE, MANAGED_ADMIN_USERNAME).await?;
+        migrate_legacy_owned_objects(&database_admin).await?;
+    }
+    let role_is_hardened: bool = admin
+        .query_one(
+            "SELECT rolcanlogin AND NOT rolsuper AND NOT rolinherit AND NOT rolcreatedb \
+             AND NOT rolcreaterole AND NOT rolreplication AND NOT rolbypassrls \
+             FROM pg_roles WHERE rolname = $1",
+            &[&MANAGED_USERNAME],
+        )
+        .await?
+        .get(0);
+    if !role_is_hardened {
+        return Err(AppError::Credential(
+            "No se pudo limitar el rol del PostgreSQL local".into(),
+        ));
     }
     Ok(())
 }
 
+async fn migrate_legacy_owned_objects(client: &Client) -> Result<(), AppError> {
+    client
+        .batch_execute(
+            r#"
+DO $nexora_migration$
+DECLARE
+    object record;
+BEGIN
+    FOR object IN
+        SELECT n.nspname AS schema_name, c.relname AS object_name,
+               CASE c.relkind
+                   WHEN 'r' THEN 'TABLE'
+                   WHEN 'p' THEN 'TABLE'
+                   WHEN 'v' THEN 'VIEW'
+                   WHEN 'm' THEN 'MATERIALIZED VIEW'
+                   WHEN 'S' THEN 'SEQUENCE'
+                   WHEN 'f' THEN 'FOREIGN TABLE'
+               END AS object_kind
+          FROM pg_class c
+          JOIN pg_namespace n ON n.oid = c.relnamespace
+          JOIN pg_roles owner ON owner.oid = c.relowner
+         WHERE owner.rolname = 'nexora_local'
+           AND c.relkind IN ('r', 'p', 'v', 'm', 'S', 'f')
+           AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+           AND n.nspname NOT LIKE 'pg_toast%'
+           AND n.nspname NOT LIKE 'pg_temp_%'
+           AND NOT EXISTS (
+               SELECT 1 FROM pg_depend dependency
+                WHERE dependency.classid = 'pg_class'::regclass
+                  AND dependency.objid = c.oid
+                  AND dependency.deptype = 'e'
+           )
+    LOOP
+        EXECUTE format(
+            'ALTER %s %I.%I OWNER TO nexora_app',
+            object.object_kind,
+            object.schema_name,
+            object.object_name
+        );
+    END LOOP;
+
+    FOR object IN
+        SELECT n.nspname AS schema_name, t.typname AS object_name,
+               CASE WHEN t.typtype = 'd' THEN 'DOMAIN' ELSE 'TYPE' END AS object_kind
+          FROM pg_type t
+          JOIN pg_namespace n ON n.oid = t.typnamespace
+          JOIN pg_roles owner ON owner.oid = t.typowner
+          LEFT JOIN pg_class relation ON relation.oid = t.typrelid
+         WHERE owner.rolname = 'nexora_local'
+           AND t.typelem = 0
+           AND (t.typrelid = 0 OR relation.relkind = 'c')
+           AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+           AND n.nspname NOT LIKE 'pg_toast%'
+           AND n.nspname NOT LIKE 'pg_temp_%'
+           AND NOT EXISTS (
+               SELECT 1 FROM pg_depend dependency
+                WHERE dependency.classid = 'pg_type'::regclass
+                  AND dependency.objid = t.oid
+                  AND dependency.deptype = 'e'
+           )
+    LOOP
+        EXECUTE format(
+            'ALTER %s %I.%I OWNER TO nexora_app',
+            object.object_kind,
+            object.schema_name,
+            object.object_name
+        );
+    END LOOP;
+
+    FOR object IN
+        SELECT n.nspname AS schema_name, p.proname AS object_name,
+               pg_get_function_identity_arguments(p.oid) AS identity_arguments,
+               CASE p.prokind
+                   WHEN 'p' THEN 'PROCEDURE'
+                   WHEN 'a' THEN 'AGGREGATE'
+                   ELSE 'FUNCTION'
+               END AS object_kind
+          FROM pg_proc p
+          JOIN pg_namespace n ON n.oid = p.pronamespace
+          JOIN pg_roles owner ON owner.oid = p.proowner
+         WHERE owner.rolname = 'nexora_local'
+           AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+           AND n.nspname NOT LIKE 'pg_toast%'
+           AND n.nspname NOT LIKE 'pg_temp_%'
+           AND NOT EXISTS (
+               SELECT 1 FROM pg_depend dependency
+                WHERE dependency.classid = 'pg_proc'::regclass
+                  AND dependency.objid = p.oid
+                  AND dependency.deptype = 'e'
+           )
+    LOOP
+        EXECUTE format(
+            'ALTER %s %I.%I(%s) OWNER TO nexora_app',
+            object.object_kind,
+            object.schema_name,
+            object.object_name,
+            object.identity_arguments
+        );
+    END LOOP;
+
+    FOR object IN
+        SELECT n.nspname AS schema_name
+          FROM pg_namespace n
+          JOIN pg_roles owner ON owner.oid = n.nspowner
+         WHERE owner.rolname = 'nexora_local'
+           AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+           AND n.nspname NOT LIKE 'pg_toast%'
+           AND n.nspname NOT LIKE 'pg_temp_%'
+    LOOP
+        EXECUTE format('ALTER SCHEMA %I OWNER TO nexora_app', object.schema_name);
+    END LOOP;
+END
+$nexora_migration$;
+"#,
+        )
+        .await?;
+    Ok(())
+}
+
 async fn connect_client(port: u16, password: &str, database: &str) -> Result<Client, AppError> {
+    connect_client_as(port, password, database, MANAGED_USERNAME).await
+}
+
+async fn connect_client_as(
+    port: u16,
+    password: &str,
+    database: &str,
+    username: &str,
+) -> Result<Client, AppError> {
     let mut config = Config::new();
     config
         .host("127.0.0.1")
         .port(port)
-        .user(MANAGED_USERNAME)
+        .user(username)
         .password(password)
         .dbname(database)
         .connect_timeout(Duration::from_secs(3));
@@ -599,10 +821,84 @@ async fn connect_client(port: u16, password: &str, database: &str) -> Result<Cli
     Ok(client)
 }
 
+async fn managed_admin_client(port: u16, password: &str) -> Result<Client, AppError> {
+    if let Ok(client) = connect_client_as(port, password, "postgres", MANAGED_ADMIN_USERNAME).await
+    {
+        if current_role_is_superuser(&client).await? {
+            return Ok(client);
+        }
+    }
+
+    let legacy = connect_client_as(port, password, "postgres", LEGACY_ADMIN_USERNAME)
+        .await
+        .map_err(|_| {
+            AppError::Credential(
+                "No se pudo recuperar el rol administrativo del PostgreSQL local".into(),
+            )
+        })?;
+    if !current_role_is_superuser(&legacy).await? {
+        return Err(AppError::Credential(
+            "El PostgreSQL local no dispone de un rol administrativo recuperable".into(),
+        ));
+    }
+    let admin_exists = legacy
+        .query_opt(
+            "SELECT 1 FROM pg_roles WHERE rolname = $1",
+            &[&MANAGED_ADMIN_USERNAME],
+        )
+        .await?
+        .is_some();
+    let role_password = format!("'{password}'");
+    let statement = if admin_exists {
+        format!(
+            "ALTER ROLE {MANAGED_ADMIN_USERNAME} WITH LOGIN SUPERUSER CREATEDB CREATEROLE \
+             NOREPLICATION BYPASSRLS PASSWORD {role_password}"
+        )
+    } else {
+        format!(
+            "CREATE ROLE {MANAGED_ADMIN_USERNAME} WITH LOGIN SUPERUSER CREATEDB CREATEROLE \
+             NOREPLICATION BYPASSRLS PASSWORD {role_password}"
+        )
+    };
+    legacy.batch_execute(&statement).await?;
+    drop(legacy);
+
+    let admin = connect_client_as(port, password, "postgres", MANAGED_ADMIN_USERNAME).await?;
+    if !current_role_is_superuser(&admin).await? {
+        return Err(AppError::Credential(
+            "No se pudo restaurar el rol administrativo del PostgreSQL local".into(),
+        ));
+    }
+    Ok(admin)
+}
+
+async fn current_role_is_superuser(client: &Client) -> Result<bool, AppError> {
+    Ok(client
+        .query_one(
+            "SELECT rolsuper FROM pg_roles WHERE rolname = current_user",
+            &[],
+        )
+        .await?
+        .get(0))
+}
+
+fn validate_managed_password(password: &str) -> Result<(), AppError> {
+    if password.len() == 64 && password.bytes().all(|value| value.is_ascii_hexdigit()) {
+        Ok(())
+    } else {
+        Err(AppError::Credential(
+            "La credencial del PostgreSQL local tiene un formato no válido".into(),
+        ))
+    }
+}
+
 fn project_password(project_id: &str, initialized: bool) -> Result<String, AppError> {
     let entry = credential_entry(project_id)?;
     match entry.get_password() {
-        Ok(password) => Ok(password),
+        Ok(password) => {
+            validate_managed_password(&password)?;
+            Ok(password)
+        }
         Err(keyring::Error::NoEntry) if initialized => Err(AppError::Credential(
             "Falta la credencial de este PostgreSQL local en Windows Credential Manager".into(),
         )),
@@ -618,9 +914,11 @@ fn project_password(project_id: &str, initialized: bool) -> Result<String, AppEr
 }
 
 fn stored_project_password(project_id: &str) -> Result<String, AppError> {
-    credential_entry(project_id)?
+    let password = credential_entry(project_id)?
         .get_password()
-        .map_err(|error| AppError::Credential(error.to_string()))
+        .map_err(|error| AppError::Credential(error.to_string()))?;
+    validate_managed_password(&password)?;
+    Ok(password)
 }
 
 fn credential_entry(project_id: &str) -> Result<Entry, AppError> {
@@ -750,8 +1048,11 @@ mod tests {
     use std::{fs, net::TcpStream};
 
     use super::{
-        external_process_path, find_postgresql_distribution, free_loopback_port,
-        start_managed_internal, stop_managed_internal, KEYRING_SERVICE,
+        connect_client_as, external_process_path, find_postgresql_distribution, free_loopback_port,
+        initialize_cluster_as, project_password, spawn_postgres, start_managed_internal,
+        stop_managed_internal, validate_managed_password, wait_for_authenticated_server,
+        KEYRING_SERVICE, LEGACY_ADMIN_USERNAME, MANAGED_ADMIN_USERNAME, MANAGED_DATABASE,
+        MANAGED_USERNAME,
     };
     use crate::{commands::projects::create_project_sync, error::AppError, state::AppState};
 
@@ -766,6 +1067,19 @@ mod tests {
     #[test]
     fn allocates_a_loopback_port() {
         assert_ne!(free_loopback_port().unwrap(), 0);
+    }
+
+    #[test]
+    fn accepts_only_generated_managed_passwords() {
+        assert!(validate_managed_password(&"a1".repeat(32)).is_ok());
+        for invalid in [
+            "short",
+            &"z".repeat(64),
+            &format!("{}'", "a".repeat(63)),
+            &format!("{}\n", "a".repeat(64)),
+        ] {
+            assert!(validate_managed_password(invalid).is_err());
+        }
     }
 
     #[test]
@@ -923,5 +1237,119 @@ mod tests {
         assert_eq!(deleted["affectedRows"], 1);
         assert_eq!(remaining["rows"][0]["total"], 1);
         assert!(TcpStream::connect(("127.0.0.1", port)).is_err());
+    }
+
+    #[test]
+    #[ignore = "requires PostgreSQL and Windows Credential Manager"]
+    fn migrates_the_legacy_superuser_to_the_limited_application_role() {
+        let root = std::env::temp_dir().join(format!(
+            "nexora-managed-postgresql-migration-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir(&root).expect("temporary project directory");
+        create_project_sync(root.to_str().unwrap(), "PostgreSQL role migration test")
+            .expect("Nexora project");
+        let manifest: serde_json::Value = serde_json::from_slice(
+            &fs::read(root.join(".nexora/project.json")).expect("project manifest"),
+        )
+        .expect("valid project manifest");
+        let project_id = manifest["id"].as_str().expect("project id").to_owned();
+        let state = AppState::new().expect("application state");
+
+        let result = tauri::async_runtime::block_on(async {
+            let distribution = find_postgresql_distribution()?;
+            let runtime_root = root.join(".nexora/runtime/postgresql");
+            let data_path = runtime_root.join("data");
+            let log_path = runtime_root.join("logs/postgresql.log");
+            fs::create_dir_all(log_path.parent().expect("log directory"))?;
+            fs::create_dir_all(&data_path)?;
+            let password = project_password(&project_id, false)?;
+            initialize_cluster_as(
+                &distribution.initdb,
+                &runtime_root,
+                &data_path,
+                &password,
+                LEGACY_ADMIN_USERNAME,
+            )?;
+            let mut legacy_runtime =
+                spawn_postgres(&distribution, &root, &project_id, &data_path, &log_path)?;
+            wait_for_authenticated_server(legacy_runtime.port, &password).await?;
+            let legacy_admin = connect_client_as(
+                legacy_runtime.port,
+                &password,
+                "postgres",
+                LEGACY_ADMIN_USERNAME,
+            )
+            .await?;
+            legacy_admin
+                .simple_query("CREATE DATABASE nexora OWNER nexora_local ENCODING 'UTF8'")
+                .await?;
+            let legacy_database = connect_client_as(
+                legacy_runtime.port,
+                &password,
+                MANAGED_DATABASE,
+                LEGACY_ADMIN_USERNAME,
+            )
+            .await?;
+            legacy_database
+                .batch_execute(
+                    "CREATE TABLE legacy_data (id integer PRIMARY KEY, value text NOT NULL); \
+                     INSERT INTO legacy_data VALUES (1, 'preserved')",
+                )
+                .await?;
+            drop(legacy_database);
+            drop(legacy_admin);
+            legacy_runtime.shutdown();
+
+            let migrated = start_managed_internal(&state, root.to_str().unwrap()).await?;
+            let app =
+                connect_client_as(migrated.port, &password, "postgres", MANAGED_USERNAME).await?;
+            let app_hardened: bool = app
+                .query_one(
+                    "SELECT rolcanlogin AND NOT rolsuper AND NOT rolinherit AND NOT rolcreatedb \
+                     AND NOT rolcreaterole AND NOT rolreplication AND NOT rolbypassrls \
+                     FROM pg_roles WHERE rolname = current_user",
+                    &[],
+                )
+                .await?
+                .get(0);
+            let admin_hardened: bool = app
+                .query_one(
+                    "SELECT rolcanlogin AND rolsuper FROM pg_roles WHERE rolname = $1",
+                    &[&MANAGED_ADMIN_USERNAME],
+                )
+                .await?
+                .get(0);
+            let database =
+                connect_client_as(migrated.port, &password, MANAGED_DATABASE, MANAGED_USERNAME)
+                    .await?;
+            let legacy_data = database
+                .query_one(
+                    "SELECT t.tableowner, d.value FROM pg_tables t \
+                     JOIN legacy_data d ON d.id = 1 \
+                     WHERE t.schemaname = 'public' AND t.tablename = 'legacy_data'",
+                    &[],
+                )
+                .await?;
+            let table_owner: String = legacy_data.get(0);
+            let value: String = legacy_data.get(1);
+            drop(database);
+            drop(app);
+            stop_managed_internal(&state).await?;
+            Ok::<_, AppError>((app_hardened, admin_hardened, table_owner, value))
+        });
+
+        let _ = tauri::async_runtime::block_on(stop_managed_internal(&state));
+        if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, &project_id) {
+            let _ = entry.delete_credential();
+        }
+        fs::remove_dir_all(&root).expect("remove temporary project");
+
+        let (app_hardened, admin_hardened, table_owner, value) =
+            result.expect("legacy role migration");
+        assert!(app_hardened);
+        assert!(admin_hardened);
+        assert_eq!(table_owner, MANAGED_USERNAME);
+        assert_eq!(value, "preserved");
     }
 }
