@@ -54,6 +54,44 @@ describe("Nexora en el WebView real de Tauri", () => {
         const putColor = await $('[data-method="PUT"]').getCSSProperty("color");
         expect(getColor.value).not.toBe(putColor.value);
         expect(await $$(".api-sidebar .request-tree-item").length).toBe(8);
+
+        const tabs = await $(".request-tabs");
+        const newRoute = await $(".request-tabs__new");
+        const activeTab = await $('.request-tab[data-active="true"]');
+        const closeRoute = await activeTab.$(".request-tab__close");
+        const [
+            tabsLocation,
+            tabsSize,
+            newRouteLocation,
+            newRouteSize,
+            tabLocation,
+            tabSize,
+            closeLocation,
+            closeSize,
+        ] = await Promise.all([
+            tabs.getLocation(),
+            tabs.getSize(),
+            newRoute.getLocation(),
+            newRoute.getSize(),
+            activeTab.getLocation(),
+            activeTab.getSize(),
+            closeRoute.getLocation(),
+            closeRoute.getSize(),
+        ]);
+        expect(
+            Math.abs(
+                newRouteLocation.y +
+                    newRouteSize.height / 2 -
+                    (tabsLocation.y + tabsSize.height / 2),
+            ),
+        ).toBeLessThanOrEqual(1);
+        expect(
+            tabLocation.x + tabSize.width - (closeLocation.x + closeSize.width),
+        ).toBeGreaterThanOrEqual(4);
+        expect(closeLocation.y - tabLocation.y).toBeGreaterThanOrEqual(3);
+        expect(
+            tabLocation.y + tabSize.height - (closeLocation.y + closeSize.height),
+        ).toBeGreaterThanOrEqual(3);
     });
 
     it("resuelve variables de sesión, resalta plantillas y ejecuta todos los métodos HTTP", async () => {
@@ -74,15 +112,71 @@ describe("Nexora en el WebView real de Tauri", () => {
         );
 
         await sendAndExpect(200);
-        const body = await $(".response-result pre").getText();
+        const body = await $(".response-result__code").getText();
         expect(body).toContain('"authorization": "Bearer nexora-e2e-token"');
         expect(body).toContain('"mode": "webview"');
         expect(body).toContain('"testHeader": "webview"');
+        expect(await $$(".response-result__code .code-viewer__number").length).toBeGreaterThan(1);
+        expect(await $$(".response-result__code .syntax-token--key").length).toBeGreaterThan(1);
         await clickElement(".response-panel .panel-tabs button:nth-child(2)");
-        await expect($(".response-result pre")).toHaveText(expect.stringContaining("x-nexora-e2e"));
+        await expect($(".response-headers")).toHaveText(expect.stringContaining("x-nexora-e2e"));
+
+        await openRequest("Echo POST");
+        await clickElement(".request-editor .panel-tabs button:nth-child(3)");
+        const formattedBody = '{\n    "name": "{{userName}}",\n    "method": "POST"\n}';
+        await browser.waitUntil(
+            async () => (await $('[aria-label="Body JSON"]').getValue()) === formattedBody,
+        );
+        expect(await $$(".code-editor__body .syntax-editor__gutter span").length).toBe(4);
+        expect(await $$(".code-editor__body .syntax-token--key").length).toBeGreaterThanOrEqual(2);
+        const bodyVariable = await $(".code-editor__body .syntax-token--template");
+        await expect(bodyVariable).toHaveText("{{userName}}");
+        const bodyVariableColor = await bodyVariable.getCSSProperty("color");
+        expect(String(bodyVariableColor.value).replace(/\s/g, "")).toBe("rgb(232,117,25)");
+        const editorMetrics = await browser.execute(() => {
+            const textarea = document.querySelector<HTMLTextAreaElement>(
+                '.code-editor__body textarea[aria-label="Body JSON"]',
+            );
+            const code = document.querySelector<HTMLElement>(".code-editor__body pre code");
+            const line = code?.children.item(2);
+            if (!textarea || !code || !line) throw new Error("No se encontró el editor JSON");
+
+            const textareaStyle = getComputedStyle(textarea);
+            const codeStyle = getComputedStyle(code);
+            const mirror = document.createElement("span");
+            mirror.textContent = line.textContent;
+            Object.assign(mirror.style, {
+                fontFamily: textareaStyle.fontFamily,
+                fontFeatureSettings: textareaStyle.fontFeatureSettings,
+                fontSize: textareaStyle.fontSize,
+                fontStretch: textareaStyle.fontStretch,
+                fontStyle: textareaStyle.fontStyle,
+                fontVariantLigatures: textareaStyle.fontVariantLigatures,
+                fontWeight: textareaStyle.fontWeight,
+                letterSpacing: textareaStyle.letterSpacing,
+                position: "fixed",
+                visibility: "hidden",
+                whiteSpace: "pre",
+            });
+            document.body.append(mirror);
+
+            const range = document.createRange();
+            range.selectNodeContents(line);
+            const highlightedWidth = range.getBoundingClientRect().width;
+            const textareaWidth = mirror.getBoundingClientRect().width;
+            mirror.remove();
+
+            return {
+                codeFont: codeStyle.fontFamily,
+                gap: highlightedWidth - textareaWidth,
+                textareaFont: textareaStyle.fontFamily,
+            };
+        });
+        expect(editorMetrics.codeFont).toBe(editorMetrics.textareaFont);
+        expect(Math.abs(editorMetrics.gap)).toBeLessThanOrEqual(0.5);
+        await sendAndExpect(201);
 
         const scenarios = [
-            ["Echo POST", 201],
             ["Echo PUT", 200],
             ["Echo PATCH", 200],
             ["Echo DELETE", 204],
@@ -258,7 +352,18 @@ describe("Nexora en el WebView real de Tauri", () => {
         const documentEditor = await $('[aria-label="Documento JSON"]');
         await documentEditor.setValue('{"name":"webview","count":1}');
         await clickButton("Guardar");
-        await expect($(".document-card pre")).toHaveText(expect.stringContaining('"count": 1'));
+        await expect($(".document-card .code-viewer")).toHaveText(
+            expect.stringContaining('"count": 1'),
+        );
+        expect(await $$(".document-card .code-viewer__number").length).toBeGreaterThan(1);
+        expect(await $$(".document-card .syntax-token--key").length).toBeGreaterThan(1);
+
+        await clickButton("Esquema");
+        await expect($(".mongo-schema")).toHaveText(expect.stringContaining("name"));
+        await clickButton("Índices");
+        await $(".mongo-index-card").waitForDisplayed({ timeout: 30_000 });
+        await expect($(".mongo-index-card")).toHaveText(expect.stringContaining("_id_"));
+        await clickButton("Documentos");
 
         await $('[aria-label="Editar documento"]').click();
         const editEditor = await $('[aria-label="Documento JSON"]');
@@ -266,7 +371,9 @@ describe("Nexora en el WebView real de Tauri", () => {
             (await editEditor.getValue()).replace('"count": 1', '"count": 2'),
         );
         await clickButton("Guardar");
-        await expect($(".document-card pre")).toHaveText(expect.stringContaining('"count": 2'));
+        await expect($(".document-card .code-viewer")).toHaveText(
+            expect.stringContaining('"count": 2'),
+        );
 
         await $('[aria-label="Eliminar documento"]').click();
         await browser.waitUntil(async () => !(await $(".document-card").isExisting()));
@@ -282,8 +389,10 @@ describe("Nexora en el WebView real de Tauri", () => {
         await sql.waitForDisplayed({ timeout: 180_000 });
 
         await sql.setValue("SELECT 41 + 1 AS answer;");
+        expect(await $$(".sql-editor .syntax-token--keyword").length).toBeGreaterThanOrEqual(2);
         await clickButton("Ejecutar");
         await expect($(".sql-results")).toHaveText(expect.stringContaining("42"));
+        await (await button("Exportar CSV")).waitForEnabled();
 
         await runWritableSql(
             "CREATE TABLE webview_items (id integer PRIMARY KEY, name text NOT NULL);",
