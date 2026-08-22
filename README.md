@@ -27,29 +27,61 @@ en local.
 
 ![Vista previa de Nexora](./images/banner.png)
 
-## Estado
+## Arquitectura
 
-La versión actual conecta el frontend con el núcleo Rust e incluye:
+Nexora separa la interfaz React del núcleo nativo. Toda operación con red, archivos, credenciales o
+bases de datos atraviesa comandos Tauri validados y limitados mediante capabilities.
 
-- Shell de escritorio modular con navegación entre espacios de trabajo.
-- Selector inicial para abrir la carpeta raíz de un proyecto Nexora o crear uno nuevo.
-- Cliente REST con ejecución HTTP real, status, headers, body, duración y tamaño de respuesta.
-- Rutas, carpetas y monitores visibles en la raíz, con un JSON por recurso para obtener diffs
-  claros en Git.
-- Carpetas persistentes, menú contextual para renombrar o eliminar rutas y guardado automático.
-- Pestañas de ruta cerrables con `Ctrl+W` sin permitir cerrar la última petición abierta.
-- Historial HTTP local con búsqueda, repetición y limpieza controlada.
-- Monitores locales configurables, ejecución manual o periódica y registro en el historial.
-- MongoDB local administrado por proyecto y conexión opcional a servidores externos.
-- Consulta de MongoDB, creación de colecciones e inserción, edición y borrado de documentos.
-- Inspección de esquemas e índices MongoDB.
-- PostgreSQL 18.6 local administrado por proyecto, con esquemas, tablas, editor SQL y exportación
-  CSV.
-- Variables de sesión para resolver `{{referencias}}` sin guardar secretos en el proyecto.
-- Búsqueda global con `Ctrl+K` para módulos, peticiones, colecciones y tablas cargadas.
-- Ajustes locales persistentes y notificaciones Sonner para las operaciones principales.
-- Transición SilkWave durante la carga del proyecto, ajustada al tamaño de sus datos locales.
-- Diseño adaptable, navegación accesible y soporte para movimiento reducido.
+```mermaid
+flowchart LR
+    subgraph Frontend["Interfaz de escritorio"]
+        Shell["React + TypeScript"]
+        Workspaces["API · MongoDB · PostgreSQL<br/>Historial · Monitores"]
+        Shell --> Workspaces
+    end
+
+    Bridge["IPC de Tauri<br/>capabilities limitadas"]
+
+    subgraph Core["Núcleo Rust"]
+        Commands["Comandos y validación"]
+        Http["Motor HTTP"]
+        Runtimes["Supervisores de runtimes"]
+        Storage["Persistencia y migraciones"]
+        Commands --> Http
+        Commands --> Runtimes
+        Commands --> Storage
+    end
+
+    Workspaces --> Bridge --> Commands
+    Http --> APIs["APIs locales o remotas"]
+    Runtimes --> MongoDB["MongoDB local o externo"]
+    Runtimes --> PostgreSQL["PostgreSQL local"]
+    Runtimes --> Keychain["Windows Credential Manager"]
+    Storage --> Versionable["requests/ · folders/ · monitors/<br/>Contenido versionable con Git"]
+    Storage --> Private[".nexora/runtime/<br/>Estado privado local"]
+```
+
+## Funciones
+
+1. Shell de escritorio modular con navegación entre espacios de trabajo.
+2. Selector inicial para abrir la carpeta raíz de un proyecto Nexora o crear uno nuevo.
+3. Cliente REST con ejecución HTTP real, status, headers, body, duración y tamaño de respuesta.
+4. Rutas, carpetas y monitores visibles en la raíz, con un JSON por recurso para obtener diffs
+   claros en Git.
+5. Carpetas persistentes, menú contextual para renombrar o eliminar rutas y guardado automático.
+6. Pestañas de ruta cerrables con `Ctrl+W` sin permitir cerrar la última petición abierta.
+7. Historial HTTP local con búsqueda, repetición y limpieza controlada.
+8. Monitores locales configurables, ejecución manual o periódica y registro en el historial.
+9. MongoDB local administrado por proyecto y conexión opcional a servidores externos.
+10. Consulta de MongoDB, creación de colecciones e inserción, edición y borrado de documentos.
+11. Inspección de esquemas e índices MongoDB.
+12. PostgreSQL 18.6 local administrado por proyecto, con esquemas, tablas, editor SQL y exportación
+    CSV.
+13. Variables de sesión para resolver `{{referencias}}` sin guardar secretos en el proyecto.
+14. Búsqueda global con `Ctrl+K` para módulos, peticiones, colecciones y tablas cargadas.
+15. Ajustes locales persistentes y notificaciones Sonner para las operaciones principales.
+16. Transición SilkWave durante la carga del proyecto, ajustada al tamaño de sus datos locales.
+17. Diseño adaptable, navegación accesible y soporte para movimiento reducido.
 
 Las escrituras PostgreSQL requieren confirmación y las lecturas se ejecutan dentro de una
 transacción de solo lectura. El workbench utiliza el rol limitado `nexora_app`, separado del rol
