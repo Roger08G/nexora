@@ -8,9 +8,11 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 
 use crate::{
-    commands::projects::{project_runtime_context, write_json_atomic, PROJECT_DIR},
+    commands::projects::{project_runtime_context, PROJECT_DIR},
     error::{AppError, CommandResult},
+    limits::MAX_HISTORY_FILE_BYTES,
     state::AppState,
+    storage::{ensure_directory, read_json, write_json_atomic},
 };
 
 const MAX_HISTORY_ENTRIES: usize = 500;
@@ -113,7 +115,8 @@ fn list_history_sync(project_root: &str) -> Result<Vec<HistoryEntry>, AppError> 
     if !path.is_file() {
         return Ok(Vec::new());
     }
-    let mut entries: Vec<HistoryEntry> = serde_json::from_slice(&fs::read(path)?)?;
+    let mut entries: Vec<HistoryEntry> =
+        read_json(&path, MAX_HISTORY_FILE_BYTES, "El historial HTTP")?;
     entries.sort_by_key(|entry| std::cmp::Reverse(entry.executed_at_ms));
     Ok(entries)
 }
@@ -146,7 +149,7 @@ fn append_history_sync(
     let mut entries = list_history_sync(project_root)?;
     entries.insert(0, entry.clone());
     entries.truncate(MAX_HISTORY_ENTRIES);
-    write_json_atomic(&path, &entries)?;
+    write_json_atomic(&path, &entries, MAX_HISTORY_FILE_BYTES)?;
     Ok(entry)
 }
 
@@ -161,7 +164,7 @@ fn delete_history_entry_sync(project_root: &str, entry_id: &str) -> Result<(), A
             "La entrada de historial no existe".into(),
         ));
     }
-    write_json_atomic(&path, &entries)
+    write_json_atomic(&path, &entries, MAX_HISTORY_FILE_BYTES)
 }
 
 fn clear_history_sync(project_root: &str) -> Result<(), AppError> {
@@ -175,7 +178,7 @@ fn clear_history_sync(project_root: &str) -> Result<(), AppError> {
 fn history_path(project_root: &str) -> Result<PathBuf, AppError> {
     let (root, _) = project_runtime_context(project_root)?;
     let directory = root.join(PROJECT_DIR).join("runtime");
-    fs::create_dir_all(&directory)?;
+    ensure_directory(&directory)?;
     Ok(directory.join("http-history.json"))
 }
 

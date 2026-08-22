@@ -4,8 +4,17 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
+use tauri::State;
 
-use crate::error::{AppError, CommandResult};
+use crate::{
+    error::{AppError, CommandResult},
+    limits::{MAX_BODY_BYTES, MAX_HTTP_ITEMS, MAX_PROJECT_FILE_BYTES, MAX_SMALL_FILE_BYTES},
+    state::AppState,
+    storage::{
+        ensure_directory, read_bytes, read_json, read_text, validate_directory,
+        write_json_atomic as write_bounded_json, write_text_atomic,
+    },
+};
 
 const LEGACY_SCHEMA_VERSION: u32 = 1;
 const SCHEMA_VERSION: u32 = 2;
@@ -69,71 +78,118 @@ pub struct RequestFolder {
 }
 
 #[tauri::command]
-pub async fn create_project(root: String, name: String) -> CommandResult<ProjectSummary> {
-    tauri::async_runtime::spawn_blocking(move || create_project_sync(&root, &name))
-        .await
-        .map_err(|error| AppError::Internal(error.to_string()))?
-        .map_err(Into::into)
+pub async fn create_project(
+    state: State<'_, AppState>,
+    root: String,
+    name: String,
+) -> CommandResult<ProjectSummary> {
+    let project_io = state.project_io.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let _guard = lock_projects(&project_io)?;
+        create_project_sync(&root, &name)
+    })
+    .await
+    .map_err(|error| AppError::Internal(error.to_string()))?
+    .map_err(Into::into)
 }
 
 #[tauri::command]
-pub async fn open_project(root: String) -> CommandResult<ProjectSummary> {
-    tauri::async_runtime::spawn_blocking(move || open_project_sync(&root))
-        .await
-        .map_err(|error| AppError::Internal(error.to_string()))?
-        .map_err(Into::into)
+pub async fn open_project(
+    state: State<'_, AppState>,
+    root: String,
+) -> CommandResult<ProjectSummary> {
+    let project_io = state.project_io.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let _guard = lock_projects(&project_io)?;
+        open_project_sync(&root)
+    })
+    .await
+    .map_err(|error| AppError::Internal(error.to_string()))?
+    .map_err(Into::into)
 }
 
 #[tauri::command]
-pub async fn list_requests(project_root: String) -> CommandResult<Vec<SavedRequest>> {
-    tauri::async_runtime::spawn_blocking(move || list_requests_sync(&project_root))
-        .await
-        .map_err(|error| AppError::Internal(error.to_string()))?
-        .map_err(Into::into)
+pub async fn list_requests(
+    state: State<'_, AppState>,
+    project_root: String,
+) -> CommandResult<Vec<SavedRequest>> {
+    let project_io = state.project_io.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let _guard = lock_projects(&project_io)?;
+        list_requests_sync(&project_root)
+    })
+    .await
+    .map_err(|error| AppError::Internal(error.to_string()))?
+    .map_err(Into::into)
 }
 
 #[tauri::command]
-pub async fn list_request_folders(project_root: String) -> CommandResult<Vec<RequestFolder>> {
-    tauri::async_runtime::spawn_blocking(move || list_request_folders_sync(&project_root))
-        .await
-        .map_err(|error| AppError::Internal(error.to_string()))?
-        .map_err(Into::into)
+pub async fn list_request_folders(
+    state: State<'_, AppState>,
+    project_root: String,
+) -> CommandResult<Vec<RequestFolder>> {
+    let project_io = state.project_io.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let _guard = lock_projects(&project_io)?;
+        list_request_folders_sync(&project_root)
+    })
+    .await
+    .map_err(|error| AppError::Internal(error.to_string()))?
+    .map_err(Into::into)
 }
 
 #[tauri::command]
 pub async fn create_request_folder(
+    state: State<'_, AppState>,
     project_root: String,
     name: String,
 ) -> CommandResult<RequestFolder> {
-    tauri::async_runtime::spawn_blocking(move || create_request_folder_sync(&project_root, &name))
-        .await
-        .map_err(|error| AppError::Internal(error.to_string()))?
-        .map_err(Into::into)
+    let project_io = state.project_io.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let _guard = lock_projects(&project_io)?;
+        create_request_folder_sync(&project_root, &name)
+    })
+    .await
+    .map_err(|error| AppError::Internal(error.to_string()))?
+    .map_err(Into::into)
 }
 
 #[tauri::command]
 pub async fn save_request(
+    state: State<'_, AppState>,
     project_root: String,
     request: SavedRequest,
 ) -> CommandResult<SavedRequest> {
-    tauri::async_runtime::spawn_blocking(move || save_request_sync(&project_root, request))
-        .await
-        .map_err(|error| AppError::Internal(error.to_string()))?
-        .map_err(Into::into)
+    let project_io = state.project_io.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let _guard = lock_projects(&project_io)?;
+        save_request_sync(&project_root, request)
+    })
+    .await
+    .map_err(|error| AppError::Internal(error.to_string()))?
+    .map_err(Into::into)
 }
 
 #[tauri::command]
 pub async fn delete_request(
+    state: State<'_, AppState>,
     project_root: String,
     collection_id: String,
     request_id: String,
 ) -> CommandResult<()> {
+    let project_io = state.project_io.clone();
     tauri::async_runtime::spawn_blocking(move || {
+        let _guard = lock_projects(&project_io)?;
         delete_request_sync(&project_root, &collection_id, &request_id)
     })
     .await
     .map_err(|error| AppError::Internal(error.to_string()))?
     .map_err(Into::into)
+}
+
+fn lock_projects(lock: &std::sync::Mutex<()>) -> Result<std::sync::MutexGuard<'_, ()>, AppError> {
+    lock.lock()
+        .map_err(|_| AppError::Internal("Bloqueo de proyecto no disponible".into()))
 }
 
 pub(crate) fn create_project_sync(root: &str, name: &str) -> Result<ProjectSummary, AppError> {
@@ -159,32 +215,55 @@ pub(crate) fn create_project_sync(root: &str, name: &str) -> Result<ProjectSumma
         }
     }
 
-    fs::create_dir(&project_dir)?;
-    fs::create_dir(root.join(REQUESTS_DIR))?;
-    fs::create_dir(root.join(FOLDERS_DIR))?;
-    fs::create_dir(root.join(MONITORS_DIR))?;
-    let manifest = ProjectManifest {
-        id: uuid::Uuid::new_v4().to_string(),
-        schema_version: SCHEMA_VERSION,
-        name: name.to_owned(),
-    };
-    write_json_atomic(&project_dir.join("project.json"), &manifest)?;
-    write_json_atomic(
-        &root.join(FOLDERS_DIR).join("general.json"),
-        &RequestFolder {
-            id: "general".into(),
-            name: "General".into(),
-        },
-    )?;
-    ensure_runtime_ignored(&root)?;
+    let result = (|| {
+        fs::create_dir(&project_dir)?;
+        fs::create_dir(root.join(REQUESTS_DIR))?;
+        fs::create_dir(root.join(FOLDERS_DIR))?;
+        fs::create_dir(root.join(MONITORS_DIR))?;
+        let manifest = ProjectManifest {
+            id: uuid::Uuid::new_v4().to_string(),
+            schema_version: SCHEMA_VERSION,
+            name: name.to_owned(),
+        };
+        write_json_atomic(&project_dir.join("project.json"), &manifest)?;
+        write_json_atomic(
+            &root.join(FOLDERS_DIR).join("general.json"),
+            &RequestFolder {
+                id: "general".into(),
+                name: "General".into(),
+            },
+        )?;
+        ensure_runtime_ignored(&root)?;
+        summary(&root, manifest)
+    })();
+    if result.is_err() {
+        cleanup_incomplete_project(&root);
+    }
+    result
+}
 
-    summary(&root, manifest)
+fn cleanup_incomplete_project(root: &Path) {
+    for file in [
+        root.join(FOLDERS_DIR).join("general.json"),
+        root.join(PROJECT_DIR).join(".gitignore"),
+        root.join(PROJECT_DIR).join("project.json"),
+    ] {
+        let _ = fs::remove_file(file);
+    }
+    for directory in [
+        root.join(REQUESTS_DIR),
+        root.join(FOLDERS_DIR),
+        root.join(MONITORS_DIR),
+        root.join(PROJECT_DIR),
+    ] {
+        let _ = fs::remove_dir(directory);
+    }
 }
 
 fn open_project_sync(root: &str) -> Result<ProjectSummary, AppError> {
     let (root, manifest) = validated_project(root)?;
     ensure_request_folders(&root)?;
-    fs::create_dir_all(root.join(MONITORS_DIR))?;
+    ensure_directory(&root.join(MONITORS_DIR))?;
     ensure_runtime_ignored(&root)?;
     summary(&root, manifest)
 }
@@ -212,7 +291,7 @@ fn list_request_folders_sync(project_root: &str) -> Result<Vec<RequestFolder>, A
         {
             continue;
         }
-        let folder: RequestFolder = serde_json::from_slice(&fs::read(entry.path())?)?;
+        let folder: RequestFolder = read_json(&entry.path(), MAX_SMALL_FILE_BYTES, "La carpeta")?;
         validate_request_folder(&folder)?;
         folders.push(folder);
     }
@@ -255,7 +334,7 @@ fn save_request_sync(
     request.collection_name = folder.name;
 
     let directory = requests_dir(&root).join(&request.collection_id);
-    fs::create_dir_all(&directory)?;
+    ensure_directory(&directory)?;
     let path = directory.join(format!("{}.json", request.id));
     write_json_atomic(&path, &request)?;
     Ok(request)
@@ -280,8 +359,8 @@ fn delete_request_sync(
 }
 
 fn ensure_request_folders(root: &Path) -> Result<(), AppError> {
-    fs::create_dir_all(requests_dir(root))?;
-    fs::create_dir_all(folders_dir(root))?;
+    ensure_directory(&requests_dir(root))?;
+    ensure_directory(&folders_dir(root))?;
     let requests = list_requests_from_root(root)?;
     for request in requests {
         ensure_request_folder(root, &request.collection_id, &request.collection_name)?;
@@ -300,7 +379,7 @@ fn ensure_request_folders(root: &Path) -> Result<(), AppError> {
 
 fn list_requests_from_root(root: &Path) -> Result<Vec<SavedRequest>, AppError> {
     let directory = requests_dir(root);
-    fs::create_dir_all(&directory)?;
+    ensure_directory(&directory)?;
     let mut requests = Vec::new();
     for folder in fs::read_dir(directory)? {
         let folder = folder?;
@@ -314,7 +393,8 @@ fn list_requests_from_root(root: &Path) -> Result<Vec<SavedRequest>, AppError> {
             {
                 continue;
             }
-            let request: SavedRequest = serde_json::from_slice(&fs::read(entry.path())?)?;
+            let request: SavedRequest =
+                read_json(&entry.path(), MAX_PROJECT_FILE_BYTES, "La petición")?;
             validate_request(&request)?;
             requests.push(request);
         }
@@ -330,7 +410,7 @@ fn ensure_request_folder(
     validate_slug("carpeta", id)?;
     let path = folders_dir(root).join(format!("{id}.json"));
     if path.is_file() {
-        let folder: RequestFolder = serde_json::from_slice(&fs::read(path)?)?;
+        let folder: RequestFolder = read_json(&path, MAX_SMALL_FILE_BYTES, "La carpeta")?;
         validate_request_folder(&folder)?;
         return Ok(folder);
     }
@@ -344,7 +424,7 @@ fn ensure_request_folder(
 
 fn write_request_folder(root: &Path, folder: &RequestFolder) -> Result<(), AppError> {
     validate_request_folder(folder)?;
-    fs::create_dir_all(folders_dir(root))?;
+    ensure_directory(&folders_dir(root))?;
     write_json_atomic(
         &folders_dir(root).join(format!("{}.json", folder.id)),
         folder,
@@ -383,6 +463,41 @@ fn validate_request(request: &SavedRequest) -> Result<(), AppError> {
     }
     if request.url.trim().is_empty() || request.url.chars().count() > 8_192 {
         return Err(AppError::Validation("URL no válida".into()));
+    }
+    if request.params.len() > MAX_HTTP_ITEMS || request.headers.len() > MAX_HTTP_ITEMS {
+        return Err(AppError::Validation(
+            "La petición contiene demasiados parámetros o headers".into(),
+        ));
+    }
+    if request.body.len() > MAX_BODY_BYTES {
+        return Err(AppError::Validation(format!(
+            "El body supera el límite de {} MiB",
+            MAX_BODY_BYTES / 1024 / 1024
+        )));
+    }
+    let metadata_bytes =
+        request
+            .params
+            .iter()
+            .chain(&request.headers)
+            .try_fold(0_usize, |total, item| {
+                if item.id.len() > 80
+                    || item.key.len() > 64 * 1024
+                    || item.value.len() > 1024 * 1024
+                {
+                    return Err(AppError::Validation(
+                        "Un parámetro o header de la petición es demasiado grande".into(),
+                    ));
+                }
+                Ok(total
+                    .saturating_add(item.id.len())
+                    .saturating_add(item.key.len())
+                    .saturating_add(item.value.len()))
+            })?;
+    if metadata_bytes > MAX_BODY_BYTES {
+        return Err(AppError::Validation(
+            "Los parámetros y headers superan el límite permitido".into(),
+        ));
     }
     if let Ok(url) = reqwest::Url::parse(&request.url) {
         if !url.username().is_empty() || url.password().is_some() {
@@ -479,6 +594,9 @@ fn validated_project_root(root: &str) -> Result<PathBuf, AppError> {
 
 fn validated_project(root: &str) -> Result<(PathBuf, ProjectManifest), AppError> {
     let root = canonical_directory(root)?;
+    validate_directory(&root.join(PROJECT_DIR)).map_err(|_| {
+        AppError::NotFound("La carpeta no contiene un directorio .nexora válido".into())
+    })?;
     let mut manifest = read_manifest(&root)?;
     if !matches!(
         manifest.schema_version,
@@ -491,6 +609,12 @@ fn validated_project(root: &str) -> Result<(PathBuf, ProjectManifest), AppError>
     }
 
     migrate_legacy_project_content(&root)?;
+    for directory in [FOLDERS_DIR, MONITORS_DIR, REQUESTS_DIR] {
+        let path = root.join(directory);
+        if path.exists() {
+            validate_directory(&path)?;
+        }
+    }
 
     let mut manifest_changed = false;
     if manifest.schema_version == LEGACY_SCHEMA_VERSION {
@@ -552,7 +676,12 @@ fn ensure_migration_compatible(source: &Path, destination: &Path) -> Result<(), 
                 let destination_type = fs::symlink_metadata(&destination_path)?.file_type();
                 if destination_type.is_symlink()
                     || !destination_type.is_file()
-                    || fs::read(&source_path)? != fs::read(&destination_path)?
+                    || read_bytes(&source_path, MAX_PROJECT_FILE_BYTES, "El archivo heredado")?
+                        != read_bytes(
+                            &destination_path,
+                            MAX_PROJECT_FILE_BYTES,
+                            "El archivo de destino",
+                        )?
                 {
                     return Err(migration_conflict(&source_path, &destination_path));
                 }
@@ -610,7 +739,7 @@ fn read_manifest(root: &Path) -> Result<ProjectManifest, AppError> {
             "La carpeta no contiene .nexora/project.json".into(),
         ));
     }
-    Ok(serde_json::from_slice(&fs::read(path)?)?)
+    read_json(&path, MAX_SMALL_FILE_BYTES, "El manifiesto del proyecto")
 }
 
 fn canonical_directory(root: &str) -> Result<PathBuf, AppError> {
@@ -697,7 +826,7 @@ fn collect_metrics(
 fn ensure_runtime_ignored(root: &Path) -> Result<(), AppError> {
     let path = root.join(PROJECT_DIR).join(".gitignore");
     let mut contents = if path.is_file() {
-        fs::read_to_string(&path)?
+        read_text(&path, MAX_SMALL_FILE_BYTES, "El .gitignore de Nexora")?
     } else {
         String::new()
     };
@@ -708,30 +837,12 @@ fn ensure_runtime_ignored(root: &Path) -> Result<(), AppError> {
         contents.push('\n');
     }
     contents.push_str("runtime/\n");
-    fs::write(path, contents)?;
+    write_text_atomic(&path, &contents, MAX_SMALL_FILE_BYTES)?;
     Ok(())
 }
 
 pub(crate) fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<(), AppError> {
-    let temporary = path.with_extension("json.tmp");
-    let mut contents = serde_json::to_string_pretty(value)?;
-    contents.push('\n');
-    fs::write(&temporary, contents)?;
-    if path.exists() {
-        let backup = path.with_extension("json.bak");
-        if backup.exists() {
-            fs::remove_file(&backup)?;
-        }
-        fs::rename(path, &backup)?;
-        if let Err(error) = fs::rename(&temporary, path) {
-            let _ = fs::rename(&backup, path);
-            return Err(error.into());
-        }
-        fs::remove_file(backup)?;
-    } else {
-        fs::rename(temporary, path)?;
-    }
-    Ok(())
+    write_bounded_json(path, value, MAX_PROJECT_FILE_BYTES)
 }
 
 #[cfg(test)]

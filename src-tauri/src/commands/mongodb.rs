@@ -1,19 +1,26 @@
 use futures_util::TryStreamExt;
 use mongodb::{
     bson::{doc, Bson, Document},
+    options::ClientOptions,
     Client,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::time::Duration;
 use tauri::State;
 use uuid::Uuid;
 
 use crate::{
     error::{AppError, CommandResult},
+    limits::{MAX_JSON_DOCUMENT_BYTES, MAX_RESULT_BYTES, MAX_URL_BYTES},
     state::AppState,
 };
 
+const MAX_ACTIVE_CONNECTIONS: usize = 16;
 const MAX_DOCUMENTS: i64 = 200;
+const MAX_INDEXES: usize = 1_000;
+const MONGO_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const MONGO_MAX_POOL_SIZE: u32 = 10;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -119,14 +126,35 @@ pub async fn connect_mongodb(
     input: MongoConnectionInput,
 ) -> CommandResult<MongoConnectionOutput> {
     let uri = input.uri.trim();
-    if !(uri.starts_with("mongodb://") || uri.starts_with("mongodb+srv://")) {
+    if uri.len() > MAX_URL_BYTES
+        || !(uri.starts_with("mongodb://") || uri.starts_with("mongodb+srv://"))
+    {
         return Err(AppError::Validation(
             "La URI debe comenzar por mongodb:// o mongodb+srv://".into(),
         )
         .into());
     }
 
-    let client = Client::with_uri_str(uri).await.map_err(mongo_error)?;
+    let mut options = ClientOptions::parse(uri).await.map_err(mongo_error)?;
+    options.connect_timeout = Some(
+        options
+            .connect_timeout
+            .unwrap_or(MONGO_CONNECT_TIMEOUT)
+            .min(MONGO_CONNECT_TIMEOUT),
+    );
+    options.server_selection_timeout = Some(
+        options
+            .server_selection_timeout
+            .unwrap_or(MONGO_CONNECT_TIMEOUT)
+            .min(MONGO_CONNECT_TIMEOUT),
+    );
+    let max_pool_size = options
+        .max_pool_size
+        .unwrap_or(MONGO_MAX_POOL_SIZE)
+        .clamp(1, MONGO_MAX_POOL_SIZE);
+    options.max_pool_size = Some(max_pool_size);
+    options.min_pool_size = options.min_pool_size.map(|size| size.min(max_pool_size));
+    let client = Client::with_options(options).map_err(mongo_error)?;
     client
         .database("admin")
         .run_command(doc! { "ping": 1 })
@@ -136,11 +164,17 @@ pub async fn connect_mongodb(
     databases.sort_by_key(|name| name.to_lowercase());
 
     let connection_id = Uuid::new_v4().to_string();
-    state
+    let mut connections = state
         .mongo
         .lock()
-        .map_err(|_| AppError::Internal("El estado de MongoDB está bloqueado".into()))?
-        .insert(connection_id.clone(), client);
+        .map_err(|_| AppError::Internal("El estado de MongoDB está bloqueado".into()))?;
+    if connections.len() >= MAX_ACTIVE_CONNECTIONS {
+        return Err(AppError::Conflict(format!(
+            "Nexora admite hasta {MAX_ACTIVE_CONNECTIONS} conexiones MongoDB activas"
+        ))
+        .into());
+    }
+    connections.insert(connection_id.clone(), client);
 
     Ok(MongoConnectionOutput {
         connection_id,
@@ -150,6 +184,7 @@ pub async fn connect_mongodb(
 
 #[tauri::command]
 pub fn disconnect_mongodb(state: State<'_, AppState>, connection_id: String) -> CommandResult<()> {
+    validate_connection_id(&connection_id)?;
     state
         .mongo
         .lock()
@@ -196,6 +231,7 @@ pub async fn list_mongodb_indexes(
 ) -> CommandResult<Vec<MongoIndexOutput>> {
     validate_namespace(&database, "base de datos")?;
     validate_namespace(&collection, "colección")?;
+    validate_collection_access(&database, &collection)?;
     let client = mongo_client(&state, &connection_id)?;
     let mut cursor = client
         .database(&database)
@@ -205,6 +241,12 @@ pub async fn list_mongodb_indexes(
         .map_err(mongo_error)?;
     let mut indexes = Vec::new();
     while let Some(index) = cursor.try_next().await.map_err(mongo_error)? {
+        if indexes.len() >= MAX_INDEXES {
+            return Err(AppError::Validation(format!(
+                "La colección supera el límite de {MAX_INDEXES} índices"
+            ))
+            .into());
+        }
         let options = index.options.as_ref();
         indexes.push(MongoIndexOutput {
             name: options
@@ -229,6 +271,7 @@ pub async fn create_mongodb_collection(
 ) -> CommandResult<()> {
     validate_namespace(&input.database, "base de datos")?;
     validate_namespace(&input.collection, "colección")?;
+    validate_collection_access(&input.database, &input.collection)?;
     let client = mongo_client(&state, &input.connection_id)?;
     client
         .database(&input.database)
@@ -245,12 +288,7 @@ pub async fn find_mongodb(
 ) -> CommandResult<MongoFindOutput> {
     validate_namespace(&input.database, "base de datos")?;
     validate_namespace(&input.collection, "colección")?;
-    if is_protected_collection(&input.database, &input.collection) {
-        return Err(AppError::Validation(
-            "MongoDB protege config.system.sessions y no permite consultas directas".into(),
-        )
-        .into());
-    }
+    validate_collection_access(&input.database, &input.collection)?;
     let client = mongo_client(&state, &input.connection_id)?;
     let collection = client
         .database(&input.database)
@@ -268,8 +306,18 @@ pub async fn find_mongodb(
 
     let mut cursor = action.await.map_err(mongo_error)?;
     let mut documents = Vec::new();
+    let mut result_bytes = 0_usize;
     while let Some(document) = cursor.try_next().await.map_err(mongo_error)? {
-        documents.push(bson_to_json(Bson::Document(document)));
+        let document = bson_to_json(Bson::Document(document));
+        result_bytes = result_bytes.saturating_add(serde_json::to_vec(&document)?.len());
+        if result_bytes > MAX_RESULT_BYTES {
+            return Err(AppError::Validation(format!(
+                "El resultado MongoDB supera el límite de {} MiB",
+                MAX_RESULT_BYTES / 1024 / 1024
+            ))
+            .into());
+        }
+        documents.push(document);
     }
     let count = documents.len();
     Ok(MongoFindOutput { documents, count })
@@ -282,6 +330,7 @@ pub async fn insert_mongodb_document(
 ) -> CommandResult<MongoInsertOutput> {
     validate_namespace(&input.database, "base de datos")?;
     validate_namespace(&input.collection, "colección")?;
+    validate_collection_access(&input.database, &input.collection)?;
     let client = mongo_client(&state, &input.connection_id)?;
     let document = parse_document(&input.document, "documento")?;
     let result = client
@@ -302,6 +351,7 @@ pub async fn update_mongodb_document(
 ) -> CommandResult<MongoUpdateOutput> {
     validate_namespace(&input.database, "base de datos")?;
     validate_namespace(&input.collection, "colección")?;
+    validate_collection_access(&input.database, &input.collection)?;
     let client = mongo_client(&state, &input.connection_id)?;
     let filter = parse_document(&input.filter, "filtro")?;
     let update = parse_document(&input.update, "actualización")?;
@@ -329,6 +379,7 @@ pub async fn delete_mongodb_document(
 ) -> CommandResult<MongoDeleteOutput> {
     validate_namespace(&input.database, "base de datos")?;
     validate_namespace(&input.collection, "colección")?;
+    validate_collection_access(&input.database, &input.collection)?;
     let client = mongo_client(&state, &input.connection_id)?;
     let filter = parse_document(&input.filter, "filtro")?;
     if filter.is_empty() {
@@ -346,6 +397,7 @@ pub async fn delete_mongodb_document(
 }
 
 fn mongo_client(state: &AppState, connection_id: &str) -> Result<Client, AppError> {
+    validate_connection_id(connection_id)?;
     state
         .mongo
         .lock()
@@ -357,6 +409,12 @@ fn mongo_client(state: &AppState, connection_id: &str) -> Result<Client, AppErro
 
 fn parse_document(value: &str, label: &str) -> Result<Document, AppError> {
     let value = if value.trim().is_empty() { "{}" } else { value };
+    if value.len() > MAX_JSON_DOCUMENT_BYTES {
+        return Err(AppError::Validation(format!(
+            "El {label} supera el límite de {} MiB",
+            MAX_JSON_DOCUMENT_BYTES / 1024 / 1024
+        )));
+    }
     serde_json::from_str(value)
         .map_err(|error| AppError::Validation(format!("JSON de {label} no válido: {error}")))
 }
@@ -372,10 +430,36 @@ fn parse_optional_document(
 }
 
 fn validate_namespace(value: &str, label: &str) -> Result<(), AppError> {
-    if value.trim().is_empty() || value.contains('\0') {
+    if value.trim().is_empty() || value.trim() != value || value.len() > 255 || value.contains('\0')
+    {
         return Err(AppError::Validation(format!("Nombre de {label} no válido")));
     }
     Ok(())
+}
+
+fn validate_connection_id(connection_id: &str) -> Result<(), AppError> {
+    let valid = !connection_id.is_empty()
+        && connection_id.len() <= 80
+        && connection_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-');
+    if valid {
+        Ok(())
+    } else {
+        Err(AppError::Validation(
+            "Identificador de conexión MongoDB no válido".into(),
+        ))
+    }
+}
+
+fn validate_collection_access(database: &str, collection: &str) -> Result<(), AppError> {
+    if is_protected_collection(database, collection) {
+        Err(AppError::Validation(
+            "MongoDB protege config.system.sessions y no permite operaciones directas".into(),
+        ))
+    } else {
+        Ok(())
+    }
 }
 
 fn is_protected_collection(database: &str, collection: &str) -> bool {

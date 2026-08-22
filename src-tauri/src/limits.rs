@@ -1,0 +1,12 @@
+pub(crate) const MAX_BODY_BYTES: usize = 8 * 1024 * 1024;
+pub(crate) const MAX_COMMAND_ERROR_CHARS: usize = 800;
+pub(crate) const MAX_CSV_BYTES: usize = 32 * 1024 * 1024;
+pub(crate) const MAX_HTTP_ITEMS: usize = 256;
+pub(crate) const MAX_HISTORY_FILE_BYTES: usize = 4 * 1024 * 1024;
+pub(crate) const MAX_JSON_DOCUMENT_BYTES: usize = 8 * 1024 * 1024;
+pub(crate) const MAX_PROJECT_FILE_BYTES: usize = 12 * 1024 * 1024;
+pub(crate) const MAX_RESULT_BYTES: usize = 16 * 1024 * 1024;
+pub(crate) const MAX_SMALL_FILE_BYTES: usize = 256 * 1024;
+pub(crate) const MAX_SQL_BYTES: usize = 1024 * 1024;
+pub(crate) const MAX_TEMPLATE_BYTES: usize = 8 * 1024 * 1024;
+pub(crate) const MAX_URL_BYTES: usize = 8 * 1024;

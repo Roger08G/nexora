@@ -1,21 +1,21 @@
 mod commands;
 mod error;
+mod limits;
 mod state;
+mod storage;
 
 use commands::{
     history, http, mongodb, mongodb_runtime, monitors, postgresql, postgresql_runtime, projects,
 };
 use state::AppState;
 
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
-pub fn run() {
-    let state = AppState::new().expect("failed to initialize Nexora services");
-
-    let builder = tauri::Builder::default().plugin(tauri_plugin_dialog::init());
-    #[cfg(feature = "e2e")]
-    let builder = builder
-        .plugin(tauri_plugin_wdio::init())
-        .plugin(tauri_plugin_wdio_webdriver::init());
+pub fn build_app<R: tauri::Runtime>(
+    builder: tauri::Builder<R>,
+    context: tauri::Context<R>,
+) -> tauri::Result<tauri::App<R>> {
+    let state = AppState::new().map_err(|error| {
+        tauri::Error::Setup((Box::new(error) as Box<dyn std::error::Error>).into())
+    })?;
 
     builder
         .manage(state)
@@ -55,6 +55,18 @@ pub fn run() {
             postgresql::execute_postgresql,
             postgresql::export_postgresql_csv,
         ])
-        .run(tauri::generate_context!())
-        .expect("failed to run Nexora");
+        .build(context)
+}
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    let builder = tauri::Builder::default().plugin(tauri_plugin_dialog::init());
+    #[cfg(feature = "e2e")]
+    let builder = builder
+        .plugin(tauri_plugin_wdio::init())
+        .plugin(tauri_plugin_wdio_webdriver::init());
+
+    build_app(builder, tauri::generate_context!())
+        .expect("failed to initialize Nexora")
+        .run(|_, _| {});
 }

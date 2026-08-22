@@ -10,6 +10,7 @@ use tauri::State;
 use crate::{
     commands::projects::KeyValueItem,
     error::{AppError, CommandResult},
+    limits::{MAX_BODY_BYTES, MAX_HTTP_ITEMS, MAX_TEMPLATE_BYTES, MAX_URL_BYTES},
     state::AppState,
 };
 
@@ -62,6 +63,7 @@ async fn execute(
     client: &reqwest::Client,
     request: HttpRequestInput,
 ) -> Result<HttpResponseOutput, AppError> {
+    validate_request(&request)?;
     let method = Method::from_bytes(request.method.trim().as_bytes())
         .map_err(|_| AppError::Validation("Método HTTP no válido".into()))?;
     let resolved_url = resolve_template(request.url.trim(), &request.variables)?;
@@ -70,6 +72,11 @@ async fn execute(
     if !matches!(url.scheme(), "http" | "https") {
         return Err(AppError::Validation(
             "Nexora solo ejecuta URLs HTTP o HTTPS".into(),
+        ));
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err(AppError::Validation(
+            "No incluyas credenciales en la URL; utiliza headers o variables de sesión".into(),
         ));
     }
 
@@ -94,7 +101,7 @@ async fn execute(
         }
         let resolved_key = resolve_template(key, &request.variables)?;
         let name = reqwest::header::HeaderName::from_bytes(resolved_key.as_bytes())
-            .map_err(|_| AppError::Validation(format!("Header no válido: {resolved_key}")))?;
+            .map_err(|_| AppError::Validation("Nombre de header no válido".into()))?;
         let resolved_value = resolve_template(&header.value, &request.variables)?;
         let value = reqwest::header::HeaderValue::from_str(&resolved_value)
             .map_err(|_| AppError::Validation(format!("Valor no válido para el header {key}")))?;
@@ -112,15 +119,18 @@ async fn execute(
 
     let started = Instant::now();
     let mut response = builder.send().await?;
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_RESPONSE_BYTES as u64)
+    {
+        return Err(response_too_large());
+    }
     let status = response.status();
     let headers = serialize_headers(response.headers());
     let mut bytes = Vec::new();
     while let Some(chunk) = response.chunk().await? {
         if bytes.len() + chunk.len() > MAX_RESPONSE_BYTES {
-            return Err(AppError::Validation(format!(
-                "La respuesta supera el límite de {} MiB",
-                MAX_RESPONSE_BYTES / 1024 / 1024
-            )));
+            return Err(response_too_large());
         }
         bytes.extend_from_slice(&chunk);
     }
@@ -149,7 +159,7 @@ fn resolve_template(value: &str, variables: &HashMap<String, String>) -> Result<
     let mut output = String::with_capacity(value.len());
     let mut remaining = value;
     while let Some(start) = remaining.find("{{") {
-        output.push_str(&remaining[..start]);
+        push_bounded(&mut output, &remaining[..start])?;
         let after_start = &remaining[start + 2..];
         let Some(end) = after_start.find("}}") else {
             return Err(AppError::Validation("Variable sin cierre }}".into()));
@@ -163,11 +173,93 @@ fn resolve_template(value: &str, variables: &HashMap<String, String>) -> Result<
                 "La variable {{{{{name}}}}} no tiene valor de sesión"
             ))
         })?;
-        output.push_str(replacement);
+        push_bounded(&mut output, replacement)?;
         remaining = &after_start[end + 2..];
     }
-    output.push_str(remaining);
+    push_bounded(&mut output, remaining)?;
     Ok(output)
+}
+
+fn validate_request(request: &HttpRequestInput) -> Result<(), AppError> {
+    if request.url.trim().is_empty() || request.url.len() > MAX_URL_BYTES {
+        return Err(AppError::Validation("URL HTTP no válida".into()));
+    }
+    if request.body.len() > MAX_BODY_BYTES {
+        return Err(AppError::Validation(format!(
+            "El body supera el límite de {} MiB",
+            MAX_BODY_BYTES / 1024 / 1024
+        )));
+    }
+    if request.params.len() > MAX_HTTP_ITEMS || request.headers.len() > MAX_HTTP_ITEMS {
+        return Err(AppError::Validation(
+            "La petición contiene demasiados parámetros o headers".into(),
+        ));
+    }
+
+    let item_bytes =
+        request
+            .params
+            .iter()
+            .chain(&request.headers)
+            .try_fold(0_usize, |total, item| {
+                if item.key.len() > 64 * 1024 || item.value.len() > 1024 * 1024 {
+                    return Err(AppError::Validation(
+                        "Un parámetro o header es demasiado grande".into(),
+                    ));
+                }
+                Ok(total
+                    .saturating_add(item.key.len())
+                    .saturating_add(item.value.len()))
+            })?;
+    if item_bytes > MAX_TEMPLATE_BYTES {
+        return Err(AppError::Validation(
+            "Los parámetros y headers superan el límite permitido".into(),
+        ));
+    }
+
+    if request.variables.len() > MAX_HTTP_ITEMS {
+        return Err(AppError::Validation(
+            "La petición contiene demasiadas variables de sesión".into(),
+        ));
+    }
+    let variable_bytes = request.variables.iter().try_fold(
+        0_usize,
+        |total, (name, value)| -> Result<usize, AppError> {
+            let name = name.trim();
+            if name.is_empty()
+                || name.len() > 128
+                || name.contains("{{")
+                || name.contains("}}")
+                || value.len() > MAX_TEMPLATE_BYTES
+            {
+                return Err(AppError::Validation("Variable de sesión no válida".into()));
+            }
+            Ok(total.saturating_add(name.len()).saturating_add(value.len()))
+        },
+    )?;
+    if variable_bytes > MAX_TEMPLATE_BYTES {
+        return Err(AppError::Validation(
+            "Las variables de sesión superan el límite permitido".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn push_bounded(output: &mut String, value: &str) -> Result<(), AppError> {
+    if output.len().saturating_add(value.len()) > MAX_TEMPLATE_BYTES {
+        return Err(AppError::Validation(
+            "El contenido resuelto de la petición es demasiado grande".into(),
+        ));
+    }
+    output.push_str(value);
+    Ok(())
+}
+
+fn response_too_large() -> AppError {
+    AppError::Validation(format!(
+        "La respuesta supera el límite de {} MiB",
+        MAX_RESPONSE_BYTES / 1024 / 1024
+    ))
 }
 
 #[cfg(test)]

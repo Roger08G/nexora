@@ -1,5 +1,4 @@
 use std::{
-    fs,
     net::{TcpListener, TcpStream},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
@@ -19,7 +18,9 @@ use crate::{
         projects::project_runtime_context,
     },
     error::{AppError, CommandResult},
+    limits::MAX_SMALL_FILE_BYTES,
     state::AppState,
+    storage::{ensure_directory, read_tail, read_text},
 };
 
 const MANAGED_USERNAME: &str = "nexora_local";
@@ -108,9 +109,22 @@ pub fn managed_mongodb_status(state: State<'_, AppState>) -> CommandResult<Manag
     let active = runtime
         .as_mut()
         .is_some_and(ManagedMongoRuntime::is_running);
-    if !active {
-        runtime.take();
+    let stale_connection = (!active)
+        .then(|| runtime.take().map(|runtime| runtime.connection_id.clone()))
+        .flatten();
+    drop(runtime);
+    if let Some(connection_id) = stale_connection {
+        state
+            .mongo
+            .lock()
+            .map_err(|_| AppError::Internal("El estado de MongoDB está bloqueado".into()))?
+            .remove(&connection_id);
     }
+
+    let runtime = state
+        .managed_mongo
+        .lock()
+        .map_err(|_| AppError::Internal("El supervisor MongoDB está bloqueado".into()))?;
 
     Ok(ManagedMongoStatus {
         available: executable.is_ok(),
@@ -162,9 +176,9 @@ async fn start_managed_internal(
     let data_path = runtime_root.join("data");
     let log_path = runtime_root.join("logs/mongod.log");
     let initialized = data_path.join("WiredTiger").is_file();
-    fs::create_dir_all(&data_path)?;
+    ensure_directory(&data_path)?;
     if let Some(log_directory) = log_path.parent() {
-        fs::create_dir_all(log_directory)?;
+        ensure_directory(log_directory)?;
     }
 
     let password = project_password(&project_id, initialized)?;
@@ -282,11 +296,15 @@ async fn recover_existing_mongod(
 }
 
 fn mongo_lock_process_id(data_path: &Path) -> Option<u32> {
-    fs::read_to_string(data_path.join("mongod.lock"))
-        .ok()?
-        .trim()
-        .parse()
-        .ok()
+    read_text(
+        &data_path.join("mongod.lock"),
+        MAX_SMALL_FILE_BYTES,
+        "El bloqueo de MongoDB",
+    )
+    .ok()?
+    .trim()
+    .parse()
+    .ok()
 }
 
 #[tauri::command]
@@ -510,7 +528,7 @@ fn startup_error(runtime: &ManagedMongoRuntime, path: &Path) -> String {
     }) {
         return "Ya existe un MongoDB activo para este proyecto".into();
     }
-    let Ok(contents) = fs::read_to_string(path) else {
+    let Ok(contents) = read_tail(path, 64 * 1024) else {
         return "No se pudo leer el diagnóstico de MongoDB".into();
     };
     let message = contents

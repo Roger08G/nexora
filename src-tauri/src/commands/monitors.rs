@@ -8,9 +8,11 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 
 use crate::{
-    commands::projects::{project_runtime_context, write_json_atomic},
+    commands::projects::project_runtime_context,
     error::{AppError, CommandResult},
+    limits::MAX_SMALL_FILE_BYTES,
     state::AppState,
+    storage::{ensure_directory, read_json, write_json_atomic},
 };
 
 const MIN_INTERVAL_SECONDS: u64 = 10;
@@ -86,7 +88,8 @@ fn list_monitors_sync(project_root: &str) -> Result<Vec<LocalMonitor>, AppError>
         {
             continue;
         }
-        let monitor: LocalMonitor = serde_json::from_slice(&fs::read(entry.path())?)?;
+        let monitor: LocalMonitor =
+            read_json(&entry.path(), MAX_SMALL_FILE_BYTES, "El monitor local")?;
         validate_monitor(&monitor)?;
         monitors.push(monitor);
     }
@@ -108,14 +111,14 @@ fn save_monitor_sync(
     let now = now_ms();
     let path = monitor_path(project_root, &monitor.id)?;
     monitor.created_at_ms = if path.is_file() {
-        let existing: LocalMonitor = serde_json::from_slice(&fs::read(&path)?)?;
+        let existing: LocalMonitor = read_json(&path, MAX_SMALL_FILE_BYTES, "El monitor local")?;
         existing.created_at_ms
     } else {
         now
     };
     monitor.updated_at_ms = now;
     validate_monitor(&monitor)?;
-    write_json_atomic(&path, &monitor)?;
+    write_json_atomic(&path, &monitor, MAX_SMALL_FILE_BYTES)?;
     Ok(monitor)
 }
 
@@ -132,7 +135,7 @@ fn delete_monitor_sync(project_root: &str, monitor_id: &str) -> Result<(), AppEr
 fn monitors_dir(project_root: &str) -> Result<PathBuf, AppError> {
     let (root, _) = project_runtime_context(project_root)?;
     let directory = root.join("monitors");
-    fs::create_dir_all(&directory)?;
+    ensure_directory(&directory)?;
     Ok(directory)
 }
 

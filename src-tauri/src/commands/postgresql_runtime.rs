@@ -1,5 +1,6 @@
 use std::{
     fs::{self, OpenOptions},
+    io::Write,
     net::{TcpListener, TcpStream},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
@@ -19,7 +20,9 @@ use crate::{
         projects::project_runtime_context,
     },
     error::{AppError, CommandResult},
+    limits::MAX_SMALL_FILE_BYTES,
     state::AppState,
+    storage::{ensure_directory, read_tail, read_text},
 };
 
 pub(crate) const MANAGED_DATABASE: &str = "nexora";
@@ -179,10 +182,10 @@ pub(crate) async fn start_managed_internal(
     let data_path = runtime_root.join("data");
     let log_path = runtime_root.join("logs/postgresql.log");
     let initialized = data_path.join("PG_VERSION").is_file();
-    fs::create_dir_all(&runtime_root)?;
-    fs::create_dir_all(&data_path)?;
+    ensure_directory(&runtime_root)?;
+    ensure_directory(&data_path)?;
     if let Some(log_directory) = log_path.parent() {
-        fs::create_dir_all(log_directory)?;
+        ensure_directory(log_directory)?;
     }
 
     let password = project_password(&project_id, initialized)?;
@@ -272,7 +275,12 @@ async fn recover_existing_postgres(
 }
 
 fn postmaster_process(data_path: &Path) -> Option<(u32, u16)> {
-    let contents = fs::read_to_string(data_path.join("postmaster.pid")).ok()?;
+    let contents = read_text(
+        &data_path.join("postmaster.pid"),
+        MAX_SMALL_FILE_BYTES,
+        "El bloqueo de PostgreSQL",
+    )
+    .ok()?;
     let mut lines = contents.lines();
     let process_id = lines.next()?.trim().parse().ok()?;
     let port = lines.nth(2)?.trim().parse().ok()?;
@@ -372,6 +380,14 @@ struct PostgresDistribution {
     version: String,
 }
 
+struct SensitiveFile(PathBuf);
+
+impl Drop for SensitiveFile {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
+    }
+}
+
 fn find_postgresql_distribution() -> Result<PostgresDistribution, AppError> {
     if let Some(home) = std::env::var_os("NEXORA_POSTGRESQL_HOME") {
         let home = PathBuf::from(home);
@@ -421,7 +437,14 @@ fn initialize_cluster(
     password: &str,
 ) -> Result<(), AppError> {
     let password_file = runtime_root.join(format!(".initdb-password-{}.tmp", Uuid::new_v4()));
-    fs::write(&password_file, password)?;
+    let mut password_output = OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&password_file)?;
+    let password_cleanup = SensitiveFile(password_file.clone());
+    password_output.write_all(password.as_bytes())?;
+    password_output.sync_all()?;
+    drop(password_output);
     let output = hidden_command(initdb)
         .arg("--pgdata")
         .arg(external_process_path(data_path))
@@ -435,7 +458,7 @@ fn initialize_cluster(
         .arg("--no-locale")
         .stdin(Stdio::null())
         .output();
-    let _ = fs::remove_file(&password_file);
+    drop(password_cleanup);
     let output = output?;
     if !output.status.success() {
         return Err(AppError::Internal(format!(
@@ -711,7 +734,7 @@ fn startup_error(runtime: &ManagedPostgresRuntime, path: &Path) -> String {
     }) {
         return "Ya existe un PostgreSQL activo para este proyecto".into();
     }
-    let Ok(contents) = fs::read_to_string(path) else {
+    let Ok(contents) = read_tail(path, 64 * 1024) else {
         return "No se pudo leer el diagnóstico de PostgreSQL".into();
     };
     let message = contents

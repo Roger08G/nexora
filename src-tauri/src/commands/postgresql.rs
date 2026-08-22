@@ -1,14 +1,17 @@
-use std::{collections::BTreeMap, fs, path::PathBuf, time::Instant};
+use std::{collections::BTreeMap, path::PathBuf, time::Instant};
 
+use futures_util::TryStreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use tauri::State;
-use tokio_postgres::{error::SqlState, types::Type, SimpleQueryMessage};
+use tokio_postgres::{error::SqlState, types::Type, SimpleQueryMessage, SimpleQueryStream};
 
 use crate::{
     commands::postgresql_runtime::{managed_client, MANAGED_DATABASE},
     error::{AppError, CommandResult},
+    limits::{MAX_CSV_BYTES, MAX_RESULT_BYTES, MAX_SQL_BYTES},
     state::AppState,
+    storage::write_text_atomic,
 };
 
 const DEFAULT_ROW_LIMIT: usize = 500;
@@ -184,7 +187,8 @@ pub fn export_postgresql_csv(input: PostgresCsvInput) -> CommandResult<()> {
 
 fn export_csv_internal(input: PostgresCsvInput) -> Result<(), AppError> {
     let path = PathBuf::from(input.path.trim());
-    if !path.is_absolute()
+    if input.path.len() > 32_768
+        || !path.is_absolute()
         || !path
             .extension()
             .is_some_and(|extension| extension.eq_ignore_ascii_case("csv"))
@@ -193,14 +197,27 @@ fn export_csv_internal(input: PostgresCsvInput) -> Result<(), AppError> {
             "Selecciona una ruta absoluta con extensión .csv".into(),
         ));
     }
-    if input.columns.is_empty() || input.columns.len() > 500 || input.rows.len() > MAX_ROW_LIMIT {
+    if input.columns.is_empty()
+        || input.columns.len() > 500
+        || input
+            .columns
+            .iter()
+            .any(|column| column.is_empty() || column.len() > 1_024)
+        || input.rows.len() > MAX_ROW_LIMIT
+    {
         return Err(AppError::Validation(
             "El resultado no se puede exportar como CSV".into(),
         ));
     }
 
     let mut csv = String::from("\u{feff}");
-    append_csv_row(&mut csv, input.columns.iter().map(|column| column.as_str()));
+    append_csv_row(
+        &mut csv,
+        input
+            .columns
+            .iter()
+            .map(|column| prevent_spreadsheet_formula(column)),
+    )?;
     for row in &input.rows {
         let object = row.as_object().ok_or_else(|| {
             AppError::Validation("El resultado PostgreSQL contiene una fila no válida".into())
@@ -211,20 +228,36 @@ fn export_csv_internal(input: PostgresCsvInput) -> Result<(), AppError> {
                 .columns
                 .iter()
                 .map(|column| csv_value(object.get(column))),
-        );
+        )?;
     }
-    fs::write(path, csv)?;
+    write_text_atomic(&path, &csv, MAX_CSV_BYTES)?;
     Ok(())
 }
 
-fn append_csv_row<'a>(csv: &mut String, values: impl Iterator<Item = impl AsRef<str>>) {
+fn append_csv_row(
+    csv: &mut String,
+    values: impl Iterator<Item = impl AsRef<str>>,
+) -> Result<(), AppError> {
     for (index, value) in values.enumerate() {
         if index > 0 {
             csv.push(',');
         }
         csv.push_str(&escape_csv_cell(value.as_ref()));
+        if csv.len() > MAX_CSV_BYTES {
+            return Err(AppError::Validation(format!(
+                "El CSV supera el límite de {} MiB",
+                MAX_CSV_BYTES / 1024 / 1024
+            )));
+        }
     }
     csv.push_str("\r\n");
+    if csv.len() > MAX_CSV_BYTES {
+        return Err(AppError::Validation(format!(
+            "El CSV supera el límite de {} MiB",
+            MAX_CSV_BYTES / 1024 / 1024
+        )));
+    }
+    Ok(())
 }
 
 fn csv_value(value: Option<&Value>) -> String {
@@ -264,7 +297,7 @@ pub(crate) async fn execute_internal(
     if sql.is_empty() {
         return Err(AppError::Validation("Escribe una sentencia SQL".into()));
     }
-    if sql.len() > 1_000_000 {
+    if sql.len() > MAX_SQL_BYTES {
         return Err(AppError::Validation(
             "La sentencia SQL es demasiado grande".into(),
         ));
@@ -293,34 +326,74 @@ pub(crate) async fn execute_internal(
 
     let started = Instant::now();
     let messages = if allow_write {
-        client.simple_query(sql).await?
+        client.simple_query_raw(sql).await?
     } else {
         client.batch_execute("BEGIN TRANSACTION READ ONLY").await?;
-        let execution = client.simple_query(sql).await;
-        let _ = client.batch_execute("ROLLBACK").await;
-        match execution {
+        match client.simple_query_raw(sql).await {
             Ok(messages) => messages,
             Err(error)
                 if error
                     .as_db_error()
                     .is_some_and(|error| error.code() == &SqlState::READ_ONLY_SQL_TRANSACTION) =>
             {
+                let _ = client.batch_execute("ROLLBACK").await;
                 return Err(AppError::Validation(
                     "La sentencia modificará PostgreSQL y requiere confirmación".into(),
                 ));
             }
-            Err(error) => return Err(error.into()),
+            Err(error) => {
+                let _ = client.batch_execute("ROLLBACK").await;
+                return Err(error.into());
+            }
         }
     };
 
     let row_limit = row_limit
         .unwrap_or(DEFAULT_ROW_LIMIT)
         .clamp(1, MAX_ROW_LIMIT);
+    let result = collect_query(messages, &column_types, row_limit).await;
+    if !allow_write {
+        let rollback = client.batch_execute("ROLLBACK").await;
+        if result.is_ok() {
+            rollback?;
+        }
+    }
+    let (affected_rows, columns, rows, truncated) = result.map_err(|error| match error {
+        AppError::Postgres(error)
+            if error
+                .as_db_error()
+                .is_some_and(|error| error.code() == &SqlState::READ_ONLY_SQL_TRANSACTION) =>
+        {
+            AppError::Validation(
+                "La sentencia modificará PostgreSQL y requiere confirmación".into(),
+            )
+        }
+        error => error,
+    })?;
+
+    Ok(PostgresQueryResult {
+        affected_rows,
+        columns,
+        duration_ms: started.elapsed().as_secs_f64() * 1_000.0,
+        readonly: !allow_write,
+        rows,
+        truncated,
+    })
+}
+
+async fn collect_query(
+    messages: SimpleQueryStream,
+    column_types: &[Type],
+    row_limit: usize,
+) -> Result<(u64, Vec<String>, Vec<Value>, bool), AppError> {
+    let mut messages = std::pin::pin!(messages);
     let mut columns = Vec::new();
     let mut rows = Vec::new();
     let mut affected_rows: u64 = 0;
+    let mut retained_bytes = 0_usize;
     let mut truncated = false;
-    for message in messages {
+
+    while let Some(message) = messages.as_mut().try_next().await? {
         match message {
             SimpleQueryMessage::Row(row) => {
                 if columns.is_empty() {
@@ -329,6 +402,7 @@ pub(crate) async fn execute_internal(
                         .iter()
                         .map(|column| column.name().to_owned())
                         .collect();
+                    retained_bytes = columns.iter().map(String::len).sum();
                 }
                 if rows.len() < row_limit {
                     let mut value = Map::new();
@@ -338,7 +412,14 @@ pub(crate) async fn execute_internal(
                             postgres_text_value(row.get(index), column_types.get(index)),
                         );
                     }
-                    rows.push(Value::Object(value));
+                    let value = Value::Object(value);
+                    let row_bytes = serde_json::to_vec(&value)?.len();
+                    if retained_bytes.saturating_add(row_bytes) <= MAX_RESULT_BYTES {
+                        retained_bytes = retained_bytes.saturating_add(row_bytes);
+                        rows.push(value);
+                    } else {
+                        truncated = true;
+                    }
                 } else {
                     truncated = true;
                 }
@@ -349,15 +430,7 @@ pub(crate) async fn execute_internal(
             _ => {}
         }
     }
-
-    Ok(PostgresQueryResult {
-        affected_rows,
-        columns,
-        duration_ms: started.elapsed().as_secs_f64() * 1_000.0,
-        readonly: !allow_write,
-        rows,
-        truncated,
-    })
+    Ok((affected_rows, columns, rows, truncated))
 }
 
 fn postgres_text_value(value: Option<&str>, data_type: Option<&Type>) -> Value {
