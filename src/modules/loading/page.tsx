@@ -1,13 +1,8 @@
-import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { SilkWave } from "@/modules/loading/components/SilkWave";
 import { NexoraMark } from "@/shared/components/brand/NexoraMark";
 import { useReducedMotion } from "@/shared/hooks/useReducedMotion";
 import "@/modules/loading/styles/loading.css";
-
-const SilkWave = lazy(() =>
-    import("@/modules/loading/components/SilkWave").then((module) => ({
-        default: module.SilkWave,
-    })),
-);
 
 const LOAD_STEPS = {
     create: [
@@ -109,11 +104,7 @@ export function LoadingPage({
             {prefersReducedMotion ? (
                 <div aria-hidden="true" className="loading-screen__silk-fallback" />
             ) : (
-                <Suspense
-                    fallback={<div aria-hidden="true" className="loading-screen__silk-fallback" />}
-                >
-                    <SilkWave className="loading-screen__silk" />
-                </Suspense>
+                <SilkWave className="loading-screen__silk" />
             )}
             <div aria-hidden="true" className="loading-screen__vignette" />
             <div aria-hidden="true" className="loading-screen__fade" />
