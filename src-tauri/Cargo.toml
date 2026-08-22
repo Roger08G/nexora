@@ -1,6 +1,6 @@
 [package]
 name = "nexora"
-version = "0.2.0-alpha"
+version = "0.3.0-alpha"
 description = "Local-first workspace for APIs and databases"
 authors = ["Roger Gómez Martínez"]
 edition = "2021"
