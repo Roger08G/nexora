@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { FiChevronRight, FiDatabase, FiSearch } from "react-icons/fi";
+import { FiChevronRight, FiSearch } from "react-icons/fi";
+import { LuLeaf } from "react-icons/lu";
 import type { MongoDatabase } from "@/modules/mongodb/types";
 
 type MongoSidebarProps = {
@@ -28,7 +29,7 @@ export function MongoSidebar({
         <aside className="module-sidebar mongo-sidebar">
             <div className="connection-summary">
                 <span className="connection-summary__icon">
-                    <FiDatabase aria-hidden="true" />
+                    <LuLeaf aria-hidden="true" />
                 </span>
                 <div>
                     <strong>MongoDB</strong>
@@ -69,7 +70,7 @@ export function MongoSidebar({
                                 type="button"
                             >
                                 <FiChevronRight aria-hidden="true" data-expanded={isExpanded} />
-                                <FiDatabase aria-hidden="true" />
+                                <LuLeaf aria-hidden="true" />
                                 <span>{database.name}</span>
                                 <small>{database.collections?.length ?? "…"}</small>
                             </button>

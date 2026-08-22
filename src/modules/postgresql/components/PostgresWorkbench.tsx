@@ -1,11 +1,14 @@
 import { FiDownload, FiPlay } from "react-icons/fi";
 import type { PostgresQueryResult, PostgresSelection } from "@/modules/postgresql/types";
+import { CodeEditor } from "@/shared/components/code/CodeEditor";
 import { ActionButton } from "@/shared/components/ui/ActionButton";
 import { StatusBadge } from "@/shared/components/ui/StatusBadge";
 
 type PostgresWorkbenchProps = {
     error: string | null;
+    isExporting: boolean;
     isLoading: boolean;
+    onExport: () => void;
     onExecute: () => void;
     onSqlChange: (sql: string) => void;
     result: PostgresQueryResult | null;
@@ -15,7 +18,9 @@ type PostgresWorkbenchProps = {
 
 export function PostgresWorkbench({
     error,
+    isExporting,
     isLoading,
+    onExport,
     onExecute,
     onSqlChange,
     result,
@@ -34,10 +39,16 @@ export function PostgresWorkbench({
                     {error ? "Error" : result ? `${Math.round(result.durationMs)} ms` : "Preparado"}
                 </StatusBadge>
                 <div className="workspace-heading__actions">
-                    <ActionButton disabled icon={FiDownload} tone="ghost">
-                        Exportar CSV
+                    <ActionButton
+                        disabled={!result?.columns.length || isExporting}
+                        icon={FiDownload}
+                        onClick={onExport}
+                        tone="ghost"
+                    >
+                        {isExporting ? "Exportando" : "Exportar CSV"}
                     </ActionButton>
                     <ActionButton
+                        className="postgres-execute"
                         disabled={isLoading}
                         icon={FiPlay}
                         onClick={onExecute}
@@ -47,19 +58,13 @@ export function PostgresWorkbench({
                     </ActionButton>
                 </div>
             </header>
-            <div className="sql-editor">
-                <div className="sql-editor__gutter">
-                    {sql.split("\n").map((_, index) => (
-                        <span key={index}>{index + 1}</span>
-                    ))}
-                </div>
-                <textarea
-                    aria-label="Consulta PostgreSQL"
-                    onChange={(event) => onSqlChange(event.target.value)}
-                    spellCheck={false}
-                    value={sql}
-                />
-            </div>
+            <CodeEditor
+                ariaLabel="Consulta PostgreSQL"
+                className="sql-editor"
+                language="sql"
+                onChange={onSqlChange}
+                value={sql}
+            />
             <div className="panel-heading">
                 <div className="panel-tabs">
                     <button data-active type="button">

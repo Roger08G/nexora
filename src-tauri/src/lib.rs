@@ -42,6 +42,7 @@ pub fn run() {
             mongodb_runtime::stop_managed_mongodb,
             mongodb::list_mongodb_databases,
             mongodb::list_mongodb_collections,
+            mongodb::list_mongodb_indexes,
             mongodb::create_mongodb_collection,
             mongodb::find_mongodb,
             mongodb::insert_mongodb_document,
@@ -52,6 +53,7 @@ pub fn run() {
             postgresql_runtime::stop_managed_postgresql,
             postgresql::inspect_postgresql,
             postgresql::execute_postgresql,
+            postgresql::export_postgresql_csv,
         ])
         .run(tauri::generate_context!())
         .expect("failed to run Nexora");

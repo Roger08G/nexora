@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { FiDatabase, FiPlus, FiRefreshCw } from "react-icons/fi";
-import { toast } from "sonner";
+import { toast } from "@/shared/services/toast";
 import { useAppSettings } from "@/app/providers/AppSettingsProvider";
 import { useGlobalSearch } from "@/app/providers/GlobalSearchProvider";
 import { useProject } from "@/app/providers/ProjectProvider";
@@ -8,7 +8,9 @@ import { MongoConnectionForm } from "@/modules/mongodb/components/MongoConnectio
 import { MongoDocumentDialog } from "@/modules/mongodb/components/MongoDocumentDialog";
 import { MongoNamespaceDialog } from "@/modules/mongodb/components/MongoNamespaceDialog";
 import { DocumentList } from "@/modules/mongodb/components/DocumentList";
+import { MongoIndexesPanel } from "@/modules/mongodb/components/MongoIndexesPanel";
 import { MongoQueryBar } from "@/modules/mongodb/components/MongoQueryBar";
+import { MongoSchemaPanel } from "@/modules/mongodb/components/MongoSchemaPanel";
 import { MongoSidebar } from "@/modules/mongodb/components/MongoSidebar";
 import {
     connectMongo,
@@ -20,6 +22,7 @@ import {
     insertMongoDocument,
     loadMongoCollections,
     loadMongoDatabases,
+    loadMongoIndexes,
     startManagedMongo,
     stopManagedMongo,
     updateMongoDocument,
@@ -28,6 +31,7 @@ import type {
     ManagedMongoStatus,
     MongoConnection,
     MongoDatabase,
+    MongoIndex,
     MongoSelection,
 } from "@/modules/mongodb/types";
 import { ActionButton } from "@/shared/components/ui/ActionButton";
@@ -41,6 +45,7 @@ type EditorState = {
 };
 
 type ConnectionMode = "external" | "managed";
+type MongoView = "documents" | "indexes" | "schema";
 
 export function MongoDbPage() {
     const { settings } = useAppSettings();
@@ -57,6 +62,10 @@ export function MongoDbPage() {
     const [projection, setProjection] = useState("");
     const [limit, setLimit] = useState("20");
     const [documents, setDocuments] = useState<Record<string, unknown>[]>([]);
+    const [indexes, setIndexes] = useState<MongoIndex[]>([]);
+    const [activeView, setActiveView] = useState<MongoView>("documents");
+    const [indexError, setIndexError] = useState<string | null>(null);
+    const [indexesLoading, setIndexesLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [isLoading, setIsLoading] = useState(false);
     const [editor, setEditor] = useState<EditorState | null>(null);
@@ -186,6 +195,7 @@ export function MongoDbPage() {
             if (selectFirst && collections[0]) {
                 const next = { database, collection: collections[0] };
                 setSelection(next);
+                resetCollectionView();
                 await query(activeConnectionId, next);
             }
         } catch (cause) {
@@ -212,6 +222,7 @@ export function MongoDbPage() {
             });
         } catch (cause) {
             const message = getErrorMessage(cause);
+            setDocuments([]);
             setError(message);
             toast.error("Error en la consulta MongoDB", {
                 description: message,
@@ -235,8 +246,36 @@ export function MongoDbPage() {
         setDatabases([]);
         setSelection(null);
         setDocuments([]);
+        setIndexes([]);
+        setActiveView("documents");
+        setIndexError(null);
         setError(null);
         toast.success("MongoDB desconectado");
+    }
+
+    function resetCollectionView() {
+        setActiveView("documents");
+        setIndexes([]);
+        setIndexError(null);
+        setIndexesLoading(false);
+    }
+
+    async function showIndexes() {
+        setActiveView("indexes");
+        if (!connectionId || !selection) return;
+        setIndexesLoading(true);
+        setIndexError(null);
+        try {
+            setIndexes(
+                await loadMongoIndexes(connectionId, selection.database, selection.collection),
+            );
+        } catch (cause) {
+            const message = getErrorMessage(cause);
+            setIndexError(message);
+            toast.error("No se pudieron cargar los índices", { description: message });
+        } finally {
+            setIndexesLoading(false);
+        }
     }
 
     async function saveDocument() {
@@ -320,6 +359,7 @@ export function MongoDbPage() {
             const next = { collection, database };
             setSelection(next);
             setDocuments([]);
+            resetCollectionView();
             setNamespaceEditor((current) => ({ ...current, open: false }));
             toast.success("Colección creada", { description: `${database}.${collection}` });
         } catch (cause) {
@@ -360,6 +400,7 @@ export function MongoDbPage() {
                 onSelect={(database, collection) => {
                     const next = { database, collection };
                     setSelection(next);
+                    resetCollectionView();
                     void query(connectionId, next);
                 }}
                 selectedCollection={selection?.collection ?? ""}
@@ -389,7 +430,7 @@ export function MongoDbPage() {
                             disabled={!selection}
                             icon={FiPlus}
                             onClick={() =>
-                                setEditor({ document: null, mode: "insert", value: "{\n  \n}" })
+                                setEditor({ document: null, mode: "insert", value: "{\n    \n}" })
                             }
                             tone="ghost"
                         >
@@ -417,38 +458,68 @@ export function MongoDbPage() {
                 />
                 <div className="panel-heading">
                     <div className="panel-tabs">
-                        <button data-active type="button">
+                        <button
+                            data-active={activeView === "documents"}
+                            onClick={() => setActiveView("documents")}
+                            type="button"
+                        >
                             Documentos
                         </button>
-                        <button disabled type="button">
+                        <button
+                            data-active={activeView === "schema"}
+                            disabled={!selection}
+                            onClick={() => setActiveView("schema")}
+                            type="button"
+                        >
                             Esquema
                         </button>
-                        <button disabled type="button">
+                        <button
+                            data-active={activeView === "indexes"}
+                            disabled={!selection}
+                            onClick={() => void showIndexes()}
+                            type="button"
+                        >
                             Índices
                         </button>
                     </div>
                     <span className="panel-heading__context">
-                        {error ?? `${documents.length} documentos`}
+                        {mongoViewContext(
+                            activeView,
+                            documents.length,
+                            indexes.length,
+                            indexesLoading,
+                            activeView === "indexes" ? indexError : error,
+                        )}
                     </span>
                 </div>
                 <div className="workspace-scroll">
-                    {documents.length > 0 ? (
-                        <DocumentList
-                            documents={documents}
-                            onDelete={removeDocument}
-                            onEdit={(document) =>
-                                setEditor({
-                                    document,
-                                    mode: "edit",
-                                    value: JSON.stringify(document, null, 2),
-                                })
-                            }
+                    {activeView === "documents" ? (
+                        documents.length > 0 ? (
+                            <DocumentList
+                                documents={documents}
+                                onDelete={removeDocument}
+                                onEdit={(document) =>
+                                    setEditor({
+                                        document,
+                                        mode: "edit",
+                                        value: JSON.stringify(document, null, 4),
+                                    })
+                                }
+                            />
+                        ) : (
+                            <p className="workspace-empty">
+                                {error ?? "La consulta no ha devuelto documentos."}
+                            </p>
+                        )
+                    ) : null}
+                    {activeView === "schema" ? <MongoSchemaPanel documents={documents} /> : null}
+                    {activeView === "indexes" ? (
+                        <MongoIndexesPanel
+                            error={indexError}
+                            indexes={indexes}
+                            loading={indexesLoading}
                         />
-                    ) : (
-                        <p className="workspace-empty">
-                            {error ?? "La consulta no ha devuelto documentos."}
-                        </p>
-                    )}
+                    ) : null}
                 </div>
             </div>
             {editor ? (
@@ -483,4 +554,17 @@ export function MongoDbPage() {
             ) : null}
         </section>
     );
+}
+
+function mongoViewContext(
+    view: MongoView,
+    documentCount: number,
+    indexCount: number,
+    indexesLoading: boolean,
+    error: string | null,
+) {
+    if (error) return error;
+    if (view === "indexes") return indexesLoading ? "Cargando…" : `${indexCount} índices`;
+    if (view === "schema") return `Inferido de ${documentCount} documentos`;
+    return `${documentCount} documentos`;
 }

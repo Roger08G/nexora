@@ -48,6 +48,16 @@ pub struct MongoFindOutput {
     count: usize,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MongoIndexOutput {
+    name: String,
+    keys: Value,
+    unique: bool,
+    sparse: bool,
+    expire_after_seconds: Option<u64>,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MongoWriteInput {
@@ -116,13 +126,13 @@ pub async fn connect_mongodb(
         .into());
     }
 
-    let client = Client::with_uri_str(uri).await.map_err(AppError::from)?;
+    let client = Client::with_uri_str(uri).await.map_err(mongo_error)?;
     client
         .database("admin")
         .run_command(doc! { "ping": 1 })
         .await
-        .map_err(AppError::from)?;
-    let mut databases = client.list_database_names().await.map_err(AppError::from)?;
+        .map_err(mongo_error)?;
+    let mut databases = client.list_database_names().await.map_err(mongo_error)?;
     databases.sort_by_key(|name| name.to_lowercase());
 
     let connection_id = Uuid::new_v4().to_string();
@@ -154,7 +164,7 @@ pub async fn list_mongodb_databases(
     connection_id: String,
 ) -> CommandResult<Vec<String>> {
     let client = mongo_client(&state, &connection_id)?;
-    let mut names = client.list_database_names().await.map_err(AppError::from)?;
+    let mut names = client.list_database_names().await.map_err(mongo_error)?;
     names.sort_by_key(|name| name.to_lowercase());
     Ok(names)
 }
@@ -171,9 +181,45 @@ pub async fn list_mongodb_collections(
         .database(&database)
         .list_collection_names()
         .await
-        .map_err(AppError::from)?;
+        .map_err(mongo_error)?;
+    names.retain(|collection| !is_protected_collection(&database, collection));
     names.sort_by_key(|name| name.to_lowercase());
     Ok(names)
+}
+
+#[tauri::command]
+pub async fn list_mongodb_indexes(
+    state: State<'_, AppState>,
+    connection_id: String,
+    database: String,
+    collection: String,
+) -> CommandResult<Vec<MongoIndexOutput>> {
+    validate_namespace(&database, "base de datos")?;
+    validate_namespace(&collection, "colección")?;
+    let client = mongo_client(&state, &connection_id)?;
+    let mut cursor = client
+        .database(&database)
+        .collection::<Document>(&collection)
+        .list_indexes()
+        .await
+        .map_err(mongo_error)?;
+    let mut indexes = Vec::new();
+    while let Some(index) = cursor.try_next().await.map_err(mongo_error)? {
+        let options = index.options.as_ref();
+        indexes.push(MongoIndexOutput {
+            name: options
+                .and_then(|options| options.name.clone())
+                .unwrap_or_else(|| "Índice sin nombre".into()),
+            keys: bson_to_json(Bson::Document(index.keys)),
+            unique: options.and_then(|options| options.unique).unwrap_or(false),
+            sparse: options.and_then(|options| options.sparse).unwrap_or(false),
+            expire_after_seconds: options
+                .and_then(|options| options.expire_after)
+                .map(|duration| duration.as_secs()),
+        });
+    }
+    indexes.sort_by_key(|index| index.name.to_lowercase());
+    Ok(indexes)
 }
 
 #[tauri::command]
@@ -188,7 +234,7 @@ pub async fn create_mongodb_collection(
         .database(&input.database)
         .create_collection(&input.collection)
         .await
-        .map_err(AppError::from)?;
+        .map_err(mongo_error)?;
     Ok(())
 }
 
@@ -199,6 +245,12 @@ pub async fn find_mongodb(
 ) -> CommandResult<MongoFindOutput> {
     validate_namespace(&input.database, "base de datos")?;
     validate_namespace(&input.collection, "colección")?;
+    if is_protected_collection(&input.database, &input.collection) {
+        return Err(AppError::Validation(
+            "MongoDB protege config.system.sessions y no permite consultas directas".into(),
+        )
+        .into());
+    }
     let client = mongo_client(&state, &input.connection_id)?;
     let collection = client
         .database(&input.database)
@@ -214,9 +266,9 @@ pub async fn find_mongodb(
         action = action.sort(sort);
     }
 
-    let mut cursor = action.await.map_err(AppError::from)?;
+    let mut cursor = action.await.map_err(mongo_error)?;
     let mut documents = Vec::new();
-    while let Some(document) = cursor.try_next().await.map_err(AppError::from)? {
+    while let Some(document) = cursor.try_next().await.map_err(mongo_error)? {
         documents.push(bson_to_json(Bson::Document(document)));
     }
     let count = documents.len();
@@ -237,7 +289,7 @@ pub async fn insert_mongodb_document(
         .collection::<Document>(&input.collection)
         .insert_one(document)
         .await
-        .map_err(AppError::from)?;
+        .map_err(mongo_error)?;
     Ok(MongoInsertOutput {
         inserted_id: bson_to_json(result.inserted_id),
     })
@@ -263,7 +315,7 @@ pub async fn update_mongodb_document(
         .collection::<Document>(&input.collection)
         .update_one(filter, update)
         .await
-        .map_err(AppError::from)?;
+        .map_err(mongo_error)?;
     Ok(MongoUpdateOutput {
         matched_count: result.matched_count,
         modified_count: result.modified_count,
@@ -287,7 +339,7 @@ pub async fn delete_mongodb_document(
         .collection::<Document>(&input.collection)
         .delete_one(filter)
         .await
-        .map_err(AppError::from)?;
+        .map_err(mongo_error)?;
     Ok(MongoDeleteOutput {
         deleted_count: result.deleted_count,
     })
@@ -326,6 +378,21 @@ fn validate_namespace(value: &str, label: &str) -> Result<(), AppError> {
     Ok(())
 }
 
+fn is_protected_collection(database: &str, collection: &str) -> bool {
+    database == "config" && collection == "system.sessions"
+}
+
+fn mongo_error(error: mongodb::error::Error) -> AppError {
+    let message = error.to_string();
+    if message.contains("Error code 13") || message.contains("Unauthorized") {
+        AppError::Validation(
+            "MongoDB rechazó la operación porque la conexión no tiene permisos".into(),
+        )
+    } else {
+        AppError::Mongo(error)
+    }
+}
+
 fn bson_to_json(value: Bson) -> Value {
     value.into_relaxed_extjson()
 }
@@ -336,12 +403,18 @@ fn empty_document() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_document;
+    use super::{is_protected_collection, parse_document};
 
     #[test]
     fn parses_strict_json_filters() {
         let filter = parse_document(r#"{"role":"developer"}"#, "filtro").unwrap();
         assert_eq!(filter.get_str("role").unwrap(), "developer");
         assert!(parse_document("{ role: 'developer' }", "filtro").is_err());
+    }
+
+    #[test]
+    fn identifies_the_protected_session_collection() {
+        assert!(is_protected_collection("config", "system.sessions"));
+        assert!(!is_protected_collection("app", "sessions"));
     }
 }

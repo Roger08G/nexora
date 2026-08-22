@@ -30,3 +30,13 @@ export function runPostgresQuery(connectionId: string, sql: string, allowWrite: 
         sql,
     });
 }
+
+export function exportPostgresCsv(
+    path: string,
+    columns: string[],
+    rows: Record<string, unknown>[],
+) {
+    return runCommand<void>("export_postgresql_csv", {
+        input: { columns, path, rows },
+    });
+}

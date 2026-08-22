@@ -3,6 +3,7 @@ import type {
     ManagedMongoStatus,
     MongoConnection,
     MongoFindResult,
+    MongoIndex,
 } from "@/modules/mongodb/types";
 import { runCommand } from "@/shared/services/native";
 
@@ -32,6 +33,14 @@ export function loadMongoCollections(connectionId: string, database: string) {
 
 export function loadMongoDatabases(connectionId: string) {
     return runCommand<string[]>("list_mongodb_databases", { connectionId });
+}
+
+export function loadMongoIndexes(connectionId: string, database: string, collection: string) {
+    return runCommand<MongoIndex[]>("list_mongodb_indexes", {
+        collection,
+        connectionId,
+        database,
+    });
 }
 
 export function createMongoCollection(input: {

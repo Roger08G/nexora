@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { FiTable } from "react-icons/fi";
-import { toast } from "sonner";
+import { save } from "@tauri-apps/plugin-dialog";
+import { toast } from "@/shared/services/toast";
 import { useAppSettings } from "@/app/providers/AppSettingsProvider";
 import { useGlobalSearch } from "@/app/providers/GlobalSearchProvider";
 import { useProject } from "@/app/providers/ProjectProvider";
@@ -8,6 +9,7 @@ import { PostgresSidebar } from "@/modules/postgresql/components/PostgresSidebar
 import { PostgresStartPanel } from "@/modules/postgresql/components/PostgresStartPanel";
 import { PostgresWorkbench } from "@/modules/postgresql/components/PostgresWorkbench";
 import {
+    exportPostgresCsv,
     getManagedPostgresStatus,
     inspectPostgres,
     runPostgresQuery,
@@ -37,6 +39,7 @@ export function PostgreSqlPage() {
     const [result, setResult] = useState<PostgresQueryResult | null>(null);
     const [error, setError] = useState<string | null>(null);
     const [isLoading, setIsLoading] = useState(false);
+    const [isExporting, setIsExporting] = useState(false);
     const connectionRef = useRef<ManagedPostgresConnection | null>(null);
 
     useEffect(() => {
@@ -202,6 +205,30 @@ export function PostgreSqlPage() {
         }
     }
 
+    async function exportCsv() {
+        if (!result?.columns.length) return;
+        const path = await save({
+            defaultPath: `${selection?.table ?? "consulta-postgresql"}.csv`,
+            filters: [{ extensions: ["csv"], name: "CSV" }],
+            title: "Exportar resultado PostgreSQL",
+        });
+        if (!path) return;
+        setIsExporting(true);
+        try {
+            await exportPostgresCsv(path, result.columns, result.rows);
+            toast.success("Resultado PostgreSQL exportado", {
+                description: result.truncated
+                    ? `${result.rows.length} filas visibles · resultado limitado`
+                    : `${result.rows.length} filas`,
+            });
+        } catch (cause) {
+            const message = getErrorMessage(cause);
+            toast.error("No se pudo exportar el CSV", { description: message });
+        } finally {
+            setIsExporting(false);
+        }
+    }
+
     function selectTable(nextSelection: PostgresSelection) {
         setSelection(nextSelection);
         setSql(selectTableSql(nextSelection));
@@ -236,8 +263,10 @@ export function PostgreSqlPage() {
             />
             <PostgresWorkbench
                 error={error}
+                isExporting={isExporting}
                 isLoading={isLoading}
                 onExecute={() => execute()}
+                onExport={() => void exportCsv()}
                 onSqlChange={(value) => {
                     setSql(value);
                     setError(null);

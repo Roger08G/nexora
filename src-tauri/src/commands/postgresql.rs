@@ -1,6 +1,6 @@
-use std::{collections::BTreeMap, time::Instant};
+use std::{collections::BTreeMap, fs, path::PathBuf, time::Instant};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use tauri::State;
 use tokio_postgres::{error::SqlState, types::Type, SimpleQueryMessage};
@@ -55,6 +55,14 @@ pub struct PostgresQueryResult {
     readonly: bool,
     rows: Vec<Value>,
     truncated: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PostgresCsvInput {
+    columns: Vec<String>,
+    path: String,
+    rows: Vec<Value>,
 }
 
 #[tauri::command]
@@ -167,6 +175,82 @@ pub async fn execute_postgresql(
     execute_internal(&state, &connection_id, &sql, allow_write, row_limit)
         .await
         .map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn export_postgresql_csv(input: PostgresCsvInput) -> CommandResult<()> {
+    export_csv_internal(input).map_err(Into::into)
+}
+
+fn export_csv_internal(input: PostgresCsvInput) -> Result<(), AppError> {
+    let path = PathBuf::from(input.path.trim());
+    if !path.is_absolute()
+        || !path
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("csv"))
+    {
+        return Err(AppError::Validation(
+            "Selecciona una ruta absoluta con extensión .csv".into(),
+        ));
+    }
+    if input.columns.is_empty() || input.columns.len() > 500 || input.rows.len() > MAX_ROW_LIMIT {
+        return Err(AppError::Validation(
+            "El resultado no se puede exportar como CSV".into(),
+        ));
+    }
+
+    let mut csv = String::from("\u{feff}");
+    append_csv_row(&mut csv, input.columns.iter().map(|column| column.as_str()));
+    for row in &input.rows {
+        let object = row.as_object().ok_or_else(|| {
+            AppError::Validation("El resultado PostgreSQL contiene una fila no válida".into())
+        })?;
+        append_csv_row(
+            &mut csv,
+            input
+                .columns
+                .iter()
+                .map(|column| csv_value(object.get(column))),
+        );
+    }
+    fs::write(path, csv)?;
+    Ok(())
+}
+
+fn append_csv_row<'a>(csv: &mut String, values: impl Iterator<Item = impl AsRef<str>>) {
+    for (index, value) in values.enumerate() {
+        if index > 0 {
+            csv.push(',');
+        }
+        csv.push_str(&escape_csv_cell(value.as_ref()));
+    }
+    csv.push_str("\r\n");
+}
+
+fn csv_value(value: Option<&Value>) -> String {
+    match value {
+        None | Some(Value::Null) => String::new(),
+        Some(Value::String(value)) => prevent_spreadsheet_formula(value),
+        Some(Value::Bool(value)) => value.to_string(),
+        Some(Value::Number(value)) => value.to_string(),
+        Some(value) => serde_json::to_string(value).unwrap_or_default(),
+    }
+}
+
+fn prevent_spreadsheet_formula(value: &str) -> String {
+    if value.starts_with(['=', '+', '-', '@', '\t', '\r']) {
+        format!("'{value}")
+    } else {
+        value.into()
+    }
+}
+
+fn escape_csv_cell(value: &str) -> String {
+    if value.contains([',', '"', '\r', '\n']) {
+        format!("\"{}\"", value.replace('"', "\"\""))
+    } else {
+        value.into()
+    }
 }
 
 pub(crate) async fn execute_internal(
@@ -348,7 +432,10 @@ fn first_sql_keyword(sql: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{first_sql_keyword, requires_confirmation, DEFAULT_ROW_LIMIT, MAX_ROW_LIMIT};
+    use super::{
+        export_csv_internal, first_sql_keyword, requires_confirmation, PostgresCsvInput,
+        DEFAULT_ROW_LIMIT, MAX_ROW_LIMIT,
+    };
 
     #[test]
     fn query_limits_remain_bounded() {
@@ -369,5 +456,28 @@ mod tests {
         assert!(!requires_confirmation(
             "WITH users AS (SELECT 1) SELECT * FROM users"
         ));
+    }
+
+    #[test]
+    fn exports_utf8_csv_with_escaping_and_formula_protection() {
+        let root = std::env::temp_dir().join(format!("nexora-csv-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root).unwrap();
+        let path = root.join("resultado.csv");
+        export_csv_internal(PostgresCsvInput {
+            columns: vec!["name".into(), "note".into(), "total".into()],
+            path: path.to_string_lossy().into_owned(),
+            rows: vec![serde_json::json!({
+                "name": "Nexora",
+                "note": "=1+1, \"quoted\"",
+                "total": 42
+            })],
+        })
+        .unwrap();
+        let contents = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            contents,
+            "\u{feff}name,note,total\r\nNexora,\"'=1+1, \"\"quoted\"\"\",42\r\n"
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

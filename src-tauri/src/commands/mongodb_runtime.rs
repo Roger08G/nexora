@@ -14,7 +14,10 @@ use tauri::State;
 use uuid::Uuid;
 
 use crate::{
-    commands::projects::project_runtime_context,
+    commands::{
+        local_runtime::{process_loopback_ports, process_owns_loopback_port, wait_for_closed_port},
+        projects::project_runtime_context,
+    },
     error::{AppError, CommandResult},
     state::AppState,
 };
@@ -29,6 +32,7 @@ pub struct ManagedMongoRuntime {
     child: Option<Child>,
     pub connection_id: String,
     pub data_path: PathBuf,
+    pub process_id: u32,
     pub port: u16,
     pub project_root: PathBuf,
     pub version: String,
@@ -36,9 +40,10 @@ pub struct ManagedMongoRuntime {
 
 impl ManagedMongoRuntime {
     fn is_running(&mut self) -> bool {
-        self.child
-            .as_mut()
-            .is_some_and(|child| child.try_wait().ok().flatten().is_none())
+        self.child.as_mut().map_or_else(
+            || process_owns_loopback_port(self.process_id, self.port),
+            |child| child.try_wait().ok().flatten().is_none(),
+        )
     }
 
     fn stop(mut self) {
@@ -53,6 +58,8 @@ impl ManagedMongoRuntime {
             }
             let _ = child.kill();
             let _ = child.wait();
+        } else {
+            wait_for_closed_port(self.port, SHUTDOWN_TIMEOUT);
         }
     }
 }
@@ -161,6 +168,13 @@ async fn start_managed_internal(
     }
 
     let password = project_password(&project_id, initialized)?;
+    if initialized {
+        if let Some((process, client, databases)) =
+            recover_existing_mongod(&project_root, &data_path, &version, &password).await?
+        {
+            return install_managed_connection(state, process, client, databases);
+        }
+    }
     let process = tauri::async_runtime::spawn_blocking({
         let executable = executable.clone();
         let version = version.clone();
@@ -185,7 +199,19 @@ async fn start_managed_internal(
     let mut databases = client.list_database_names().await.map_err(AppError::from)?;
     databases.sort_by_key(|name| name.to_lowercase());
 
+    install_managed_connection(state, process, client, databases)
+}
+
+fn install_managed_connection(
+    state: &AppState,
+    process: ManagedMongoRuntime,
+    client: Client,
+    databases: Vec<String>,
+) -> Result<ManagedMongoConnection, AppError> {
     let connection_id = process.connection_id.clone();
+    let data_path = process.data_path.clone();
+    let port = process.port;
+    let version = process.version.clone();
     state
         .mongo
         .lock()
@@ -204,6 +230,63 @@ async fn start_managed_internal(
         port,
         version,
     })
+}
+
+async fn recover_existing_mongod(
+    project_root: &Path,
+    data_path: &Path,
+    version: &str,
+    password: &str,
+) -> Result<Option<(ManagedMongoRuntime, Client, Vec<String>)>, AppError> {
+    let Some(process_id) = mongo_lock_process_id(data_path) else {
+        return Ok(None);
+    };
+
+    let ports = process_loopback_ports(process_id);
+    for port in &ports {
+        let Ok(client) = authenticated_client(*port, password).await else {
+            continue;
+        };
+        if client
+            .database("admin")
+            .run_command(doc! { "ping": 1 })
+            .await
+            .is_err()
+        {
+            continue;
+        }
+        let mut databases = client.list_database_names().await.map_err(AppError::from)?;
+        databases.sort_by_key(|name| name.to_lowercase());
+        return Ok(Some((
+            ManagedMongoRuntime {
+                child: None,
+                connection_id: Uuid::new_v4().to_string(),
+                data_path: data_path.to_owned(),
+                process_id,
+                port: *port,
+                project_root: project_root.to_owned(),
+                version: version.to_owned(),
+            },
+            client,
+            databases,
+        )));
+    }
+
+    if !ports.is_empty() {
+        return Err(AppError::Credential(
+            "MongoDB ya está activo, pero Nexora no pudo recuperar su sesión local".into(),
+        ));
+    }
+
+    Ok(None)
+}
+
+fn mongo_lock_process_id(data_path: &Path) -> Option<u32> {
+    fs::read_to_string(data_path.join("mongod.lock"))
+        .ok()?
+        .trim()
+        .parse()
+        .ok()
 }
 
 #[tauri::command]
@@ -351,10 +434,12 @@ fn spawn_mongod(
         command.creation_flags(0x0800_0000);
     }
     let child = command.spawn()?;
+    let process_id = child.id();
     let mut runtime = ManagedMongoRuntime {
         child: Some(child),
         connection_id: Uuid::new_v4().to_string(),
         data_path: data_path.to_owned(),
+        process_id,
         port,
         project_root: project_root.to_owned(),
         version: version.to_owned(),
@@ -369,7 +454,7 @@ fn wait_until_ready(runtime: &mut ManagedMongoRuntime, log_path: &Path) -> Resul
         if !runtime.is_running() {
             return Err(AppError::Internal(format!(
                 "mongod terminó durante el arranque. {}",
-                log_tail(log_path)
+                startup_error(runtime, log_path)
             )));
         }
         if TcpStream::connect_timeout(
@@ -387,7 +472,7 @@ fn wait_until_ready(runtime: &mut ManagedMongoRuntime, log_path: &Path) -> Resul
     Err(AppError::Internal(format!(
         "MongoDB no estuvo listo en {} segundos. {}",
         STARTUP_TIMEOUT.as_secs(),
-        log_tail(log_path)
+        startup_error(runtime, log_path)
     )))
 }
 
@@ -419,19 +504,23 @@ async fn authenticated_client(port: u16, password: &str) -> Result<Client, AppEr
     .await?)
 }
 
-fn log_tail(path: &Path) -> String {
+fn startup_error(runtime: &ManagedMongoRuntime, path: &Path) -> String {
+    if mongo_lock_process_id(&runtime.data_path).is_some_and(|process_id| {
+        process_id != runtime.process_id && !process_loopback_ports(process_id).is_empty()
+    }) {
+        return "Ya existe un MongoDB activo para este proyecto".into();
+    }
     let Ok(contents) = fs::read_to_string(path) else {
-        return "No hay log de mongod disponible".into();
+        return "No se pudo leer el diagnóstico de MongoDB".into();
     };
-    contents
+    let message = contents
         .lines()
         .rev()
-        .take(3)
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .collect::<Vec<_>>()
-        .join(" | ")
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .find(|entry| matches!(entry["s"].as_str(), Some("E" | "F")))
+        .and_then(|entry| entry["msg"].as_str().map(str::to_owned))
+        .unwrap_or_else(|| "MongoDB no pudo completar el arranque".into());
+    message.chars().take(180).collect()
 }
 
 #[cfg(test)]
@@ -474,10 +563,26 @@ mod tests {
         )
         .expect("valid project manifest");
         let project_id = manifest["id"].as_str().expect("project id").to_owned();
-        let state = AppState::new().expect("application state");
+        let first_state = AppState::new().expect("first application state");
+        let first_connection = tauri::async_runtime::block_on(start_managed_internal(
+            &first_state,
+            root.to_str().unwrap(),
+        ))
+        .expect("first managed MongoDB start");
+        let orphan = first_state
+            .managed_mongo
+            .lock()
+            .expect("first MongoDB runtime lock")
+            .take()
+            .expect("first MongoDB runtime");
+        std::mem::forget(orphan);
+        drop(first_state);
+
+        let state = AppState::new().expect("restarted application state");
 
         let result = tauri::async_runtime::block_on(async {
             let connection = start_managed_internal(&state, root.to_str().unwrap()).await?;
+            assert_eq!(connection.port, first_connection.port);
             let client = state
                 .mongo
                 .lock()

@@ -1,4 +1,5 @@
 import { FiCopy, FiEdit2, FiFileText, FiTrash2 } from "react-icons/fi";
+import { CodeViewer } from "@/shared/components/code/CodeViewer";
 
 type DocumentListProps = {
     documents: readonly Record<string, unknown>[];
@@ -18,7 +19,7 @@ export function DocumentList({ documents, onDelete, onEdit }: DocumentListProps)
                             <button
                                 aria-label="Copiar documento"
                                 onClick={() =>
-                                    navigator.clipboard.writeText(JSON.stringify(document, null, 2))
+                                    navigator.clipboard.writeText(JSON.stringify(document, null, 4))
                                 }
                                 type="button"
                             >
@@ -40,7 +41,11 @@ export function DocumentList({ documents, onDelete, onEdit }: DocumentListProps)
                             </button>
                         </div>
                     </header>
-                    <pre>{JSON.stringify(document, null, 2)}</pre>
+                    <CodeViewer
+                        ariaLabel={`Documento ${index + 1}`}
+                        language="json"
+                        value={JSON.stringify(document, null, 4)}
+                    />
                 </article>
             ))}
         </div>

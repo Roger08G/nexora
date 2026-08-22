@@ -30,6 +30,14 @@ export type MongoFindResult = {
     documents: Record<string, unknown>[];
 };
 
+export type MongoIndex = {
+    expireAfterSeconds: number | null;
+    keys: Record<string, unknown>;
+    name: string;
+    sparse: boolean;
+    unique: boolean;
+};
+
 export type MongoSelection = {
     collection: string;
     database: string;

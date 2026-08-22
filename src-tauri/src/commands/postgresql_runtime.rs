@@ -14,7 +14,10 @@ use tokio_postgres::{Client, Config, NoTls};
 use uuid::Uuid;
 
 use crate::{
-    commands::projects::project_runtime_context,
+    commands::{
+        local_runtime::{process_owns_loopback_port, wait_for_closed_port},
+        projects::project_runtime_context,
+    },
     error::{AppError, CommandResult},
     state::AppState,
 };
@@ -33,6 +36,7 @@ pub struct ManagedPostgresRuntime {
     pub database: String,
     pg_ctl_path: PathBuf,
     pub port: u16,
+    pub process_id: u32,
     pub project_id: String,
     pub project_root: PathBuf,
     pub version: String,
@@ -40,18 +44,24 @@ pub struct ManagedPostgresRuntime {
 
 impl ManagedPostgresRuntime {
     fn is_running(&mut self) -> bool {
-        self.child
-            .as_mut()
-            .is_some_and(|child| child.try_wait().ok().flatten().is_none())
+        self.child.as_mut().map_or_else(
+            || process_owns_loopback_port(self.process_id, self.port),
+            |child| child.try_wait().ok().flatten().is_none(),
+        )
     }
 
     fn shutdown(&mut self) {
-        let Some(mut child) = self.child.take() else {
-            return;
-        };
-        if child.try_wait().ok().flatten().is_none() {
+        let mut child = self.child.take();
+        let child_is_running = child
+            .as_mut()
+            .is_some_and(|child| child.try_wait().ok().flatten().is_none());
+        if child_is_running || process_owns_loopback_port(self.process_id, self.port) {
             let _ = pg_ctl_stop(&self.pg_ctl_path, &self.data_path);
         }
+        let Some(mut child) = child else {
+            wait_for_closed_port(self.port, SHUTDOWN_TIMEOUT);
+            return;
+        };
         let started = Instant::now();
         while started.elapsed() < SHUTDOWN_TIMEOUT {
             match child.try_wait() {
@@ -178,6 +188,22 @@ pub(crate) async fn start_managed_internal(
     let password = project_password(&project_id, initialized)?;
     if !initialized {
         initialize_cluster(&distribution.initdb, &runtime_root, &data_path, &password)?;
+    } else if let Some(process) = recover_existing_postgres(
+        &distribution,
+        &project_root,
+        &project_id,
+        &data_path,
+        &password,
+    )
+    .await?
+    {
+        let connection = connection_from_runtime(&process);
+        *state
+            .managed_postgres
+            .lock()
+            .map_err(|_| AppError::Internal("El supervisor PostgreSQL está bloqueado".into()))? =
+            Some(process);
+        return Ok(connection);
     }
 
     let mut process = spawn_postgres(
@@ -202,6 +228,55 @@ pub(crate) async fn start_managed_internal(
         .map_err(|_| AppError::Internal("El supervisor PostgreSQL está bloqueado".into()))? =
         Some(process);
     Ok(connection)
+}
+
+async fn recover_existing_postgres(
+    distribution: &PostgresDistribution,
+    project_root: &Path,
+    project_id: &str,
+    data_path: &Path,
+    password: &str,
+) -> Result<Option<ManagedPostgresRuntime>, AppError> {
+    let Some((process_id, port)) = postmaster_process(data_path) else {
+        return Ok(None);
+    };
+    if !process_owns_loopback_port(process_id, port) {
+        return Ok(None);
+    }
+    let client = connect_client(port, password, "postgres")
+        .await
+        .map_err(|_| {
+            AppError::Credential(
+                "PostgreSQL ya está activo, pero Nexora no pudo recuperar su sesión local".into(),
+            )
+        })?;
+    client.simple_query("SELECT 1").await.map_err(|_| {
+        AppError::Credential(
+            "PostgreSQL ya está activo, pero Nexora no pudo recuperar su sesión local".into(),
+        )
+    })?;
+    ensure_managed_database(port, password).await?;
+
+    Ok(Some(ManagedPostgresRuntime {
+        child: None,
+        connection_id: Uuid::new_v4().to_string(),
+        data_path: data_path.to_owned(),
+        database: MANAGED_DATABASE.into(),
+        pg_ctl_path: distribution.pg_ctl.clone(),
+        port,
+        process_id,
+        project_id: project_id.into(),
+        project_root: project_root.to_owned(),
+        version: distribution.version.clone(),
+    }))
+}
+
+fn postmaster_process(data_path: &Path) -> Option<(u32, u16)> {
+    let contents = fs::read_to_string(data_path.join("postmaster.pid")).ok()?;
+    let mut lines = contents.lines();
+    let process_id = lines.next()?.trim().parse().ok()?;
+    let port = lines.nth(2)?.trim().parse().ok()?;
+    Some((process_id, port))
 }
 
 #[tauri::command]
@@ -401,6 +476,7 @@ fn spawn_postgres(
         .stdout(Stdio::from(log))
         .stderr(Stdio::from(stderr))
         .spawn()?;
+    let process_id = child.id();
     let mut runtime = ManagedPostgresRuntime {
         child: Some(child),
         connection_id: Uuid::new_v4().to_string(),
@@ -408,6 +484,7 @@ fn spawn_postgres(
         database: MANAGED_DATABASE.into(),
         pg_ctl_path: distribution.pg_ctl.clone(),
         port,
+        process_id,
         project_id: project_id.into(),
         project_root: project_root.to_owned(),
         version: distribution.version.clone(),
@@ -425,7 +502,7 @@ fn wait_until_port_ready(
         if !runtime.is_running() {
             return Err(AppError::Internal(format!(
                 "PostgreSQL terminó durante el arranque. {}",
-                log_tail(log_path)
+                startup_error(runtime, log_path)
             )));
         }
         if TcpStream::connect_timeout(
@@ -443,7 +520,7 @@ fn wait_until_port_ready(
     Err(AppError::Internal(format!(
         "PostgreSQL no estuvo listo en {} segundos. {}",
         STARTUP_TIMEOUT.as_secs(),
-        log_tail(log_path)
+        startup_error(runtime, log_path)
     )))
 }
 
@@ -628,19 +705,21 @@ fn free_loopback_port() -> Result<u16, AppError> {
     Ok(listener.local_addr()?.port())
 }
 
-fn log_tail(path: &Path) -> String {
+fn startup_error(runtime: &ManagedPostgresRuntime, path: &Path) -> String {
+    if postmaster_process(&runtime.data_path).is_some_and(|(process_id, port)| {
+        process_id != runtime.process_id && process_owns_loopback_port(process_id, port)
+    }) {
+        return "Ya existe un PostgreSQL activo para este proyecto".into();
+    }
     let Ok(contents) = fs::read_to_string(path) else {
-        return "No hay log de PostgreSQL disponible".into();
+        return "No se pudo leer el diagnóstico de PostgreSQL".into();
     };
-    contents
+    let message = contents
         .lines()
         .rev()
-        .take(5)
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .collect::<Vec<_>>()
-        .join(" | ")
+        .find(|line| line.contains("FATAL:") || line.contains("ERROR:"))
+        .unwrap_or("PostgreSQL no pudo completar el arranque");
+    message.chars().take(180).collect()
 }
 
 #[cfg(test)]
@@ -691,10 +770,26 @@ mod tests {
         )
         .expect("valid project manifest");
         let project_id = manifest["id"].as_str().expect("project id").to_owned();
-        let state = AppState::new().expect("application state");
+        let first_state = AppState::new().expect("first application state");
+        let first_connection = tauri::async_runtime::block_on(start_managed_internal(
+            &first_state,
+            root.to_str().unwrap(),
+        ))
+        .expect("first managed PostgreSQL start");
+        let orphan = first_state
+            .managed_postgres
+            .lock()
+            .expect("first PostgreSQL runtime lock")
+            .take()
+            .expect("first PostgreSQL runtime");
+        std::mem::forget(orphan);
+        drop(first_state);
+
+        let state = AppState::new().expect("restarted application state");
 
         let result = tauri::async_runtime::block_on(async {
             let connection = start_managed_internal(&state, root.to_str().unwrap()).await?;
+            assert_eq!(connection.port, first_connection.port);
             let blocked = crate::commands::postgresql::execute_internal(
                 &state,
                 &connection.connection_id,

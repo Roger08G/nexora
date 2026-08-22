@@ -1,4 +1,5 @@
 import { FiSave, FiX } from "react-icons/fi";
+import { CodeEditor } from "@/shared/components/code/CodeEditor";
 import { ActionButton } from "@/shared/components/ui/ActionButton";
 
 type MongoDocumentDialogProps = {
@@ -34,11 +35,12 @@ export function MongoDocumentDialog({
                         <FiX aria-hidden="true" />
                     </button>
                 </header>
-                <textarea
-                    aria-label="Documento JSON"
+                <CodeEditor
+                    ariaLabel="Documento JSON"
                     autoFocus
-                    onChange={(event) => onChange(event.target.value)}
-                    spellCheck={false}
+                    className="document-dialog__editor"
+                    language="json"
+                    onChange={onChange}
                     value={value}
                 />
                 {error ? <div className="inline-error">{error}</div> : null}
