@@ -1,7 +1,7 @@
 import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
-import { toast } from "sonner";
+import { toast } from "@/shared/services/toast";
 import { getErrorMessage, runCommand } from "@/shared/services/native";
 
 export type NexoraProject = {

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { FiActivity, FiCode, FiDatabase } from "react-icons/fi";
 import type { RequestDraft, ResponseState } from "@/modules/api/types";
+import { CodeViewer } from "@/shared/components/code/CodeViewer";
 import { StatusBadge } from "@/shared/components/ui/StatusBadge";
 
 type ResponsePanelProps = {
@@ -52,13 +53,16 @@ export function ResponsePanel({ draft, state }: ResponsePanelProps) {
                         <span>{state.response.durationMs} ms</span>
                         <span>{formatBytes(state.response.sizeBytes)}</span>
                     </div>
-                    <pre>
-                        {activeTab === "headers"
-                            ? state.response.headers
-                                  .map((header) => `${header.key}: ${header.value}`)
-                                  .join("\n")
-                            : formatBody(state.response.body)}
-                    </pre>
+                    {activeTab === "headers" ? (
+                        <ResponseHeaders headers={state.response.headers} />
+                    ) : (
+                        <CodeViewer
+                            ariaLabel="Cuerpo de respuesta"
+                            className="response-result__code"
+                            language={isJson(state.response.body) ? "json" : "text"}
+                            value={formatBody(state.response.body)}
+                        />
+                    )}
                 </div>
             ) : (
                 <EmptyResponse draft={draft} state={state} />
@@ -111,10 +115,32 @@ function getBadge(state: ResponseState) {
 
 function formatBody(body: string) {
     try {
-        return JSON.stringify(JSON.parse(body), null, 2);
+        return JSON.stringify(JSON.parse(body), null, 4);
     } catch {
         return body;
     }
+}
+
+function isJson(body: string) {
+    try {
+        JSON.parse(body);
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+function ResponseHeaders({ headers }: { headers: readonly { key: string; value: string }[] }) {
+    return (
+        <div className="response-headers">
+            {headers.map((header, index) => (
+                <div className="response-header" key={`${header.key}-${index}`}>
+                    <code>{header.key}</code>
+                    <span>{header.value}</span>
+                </div>
+            ))}
+        </div>
+    );
 }
 
 function formatBytes(bytes: number) {

@@ -1,9 +1,10 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { FiCheck, FiLoader, FiSave, FiSend } from "react-icons/fi";
 import type { RequestDraft, RequestSaveState } from "@/modules/api/types";
 import { KeyValueEditor } from "@/modules/api/components/KeyValueEditor";
 import { MethodSelect } from "@/modules/api/components/MethodSelect";
-import { TemplateInput, TemplateTextarea } from "@/modules/api/components/TemplateField";
+import { TemplateInput } from "@/modules/api/components/TemplateField";
+import { CodeEditor } from "@/shared/components/code/CodeEditor";
 import { ActionButton } from "@/shared/components/ui/ActionButton";
 
 type EditorSection = "params" | "headers" | "body" | "auth";
@@ -16,6 +17,7 @@ type RequestEditorProps = {
     onChange: (draft: RequestDraft) => void;
     onSave: () => void;
     onSend: () => void;
+    requestId: string;
     saveState: RequestSaveState;
 };
 
@@ -34,9 +36,22 @@ export function RequestEditor({
     onChange,
     onSave,
     onSend,
+    requestId,
     saveState,
 }: RequestEditorProps) {
     const [activeSection, setActiveSection] = useState<EditorSection>("params");
+
+    function formatBody() {
+        const body = formatJson(draft.body);
+        if (body !== draft.body) onChange({ ...draft, body });
+    }
+
+    useEffect(() => {
+        if (activeSection === "body") formatBody();
+        // La petición activa es la frontera de normalización. Los cambios del editor
+        // se formatean al perder el foco para no alterar el cursor mientras se escribe.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [activeSection, requestId]);
 
     return (
         <section className="request-editor">
@@ -109,12 +124,12 @@ export function RequestEditor({
                             <span>JSON</span>
                             <small>UTF-8</small>
                         </div>
-                        <TemplateTextarea
-                            aria-label="Body JSON"
-                            className="code-editor__template"
-                            onValueChange={(body) => onChange({ ...draft, body })}
-                            placeholder="Esta petición no tiene body"
-                            spellCheck={false}
+                        <CodeEditor
+                            ariaLabel="Body JSON"
+                            className="code-editor__body"
+                            language="json"
+                            onBlur={formatBody}
+                            onChange={(body) => onChange({ ...draft, body })}
                             value={draft.body}
                         />
                     </div>
@@ -132,6 +147,15 @@ export function RequestEditor({
             </div>
         </section>
     );
+}
+
+function formatJson(value: string) {
+    if (!value.trim()) return value;
+    try {
+        return JSON.stringify(JSON.parse(value), null, 4);
+    } catch {
+        return value;
+    }
 }
 
 function SaveState({ autoSave, state }: { autoSave: boolean; state: RequestSaveState }) {

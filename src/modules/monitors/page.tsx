@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { FiActivity, FiTrash2 } from "react-icons/fi";
-import { toast } from "sonner";
+import { toast } from "@/shared/services/toast";
 import { useAppSettings } from "@/app/providers/AppSettingsProvider";
 import { useGlobalSearch } from "@/app/providers/GlobalSearchProvider";
 import { useHistory } from "@/app/providers/HistoryProvider";

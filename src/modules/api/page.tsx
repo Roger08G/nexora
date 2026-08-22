@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { FiZap } from "react-icons/fi";
-import { toast } from "sonner";
+import { toast } from "@/shared/services/toast";
 import { useAppSettings } from "@/app/providers/AppSettingsProvider";
 import { useGlobalSearch } from "@/app/providers/GlobalSearchProvider";
 import { useProject } from "@/app/providers/ProjectProvider";
@@ -423,6 +423,7 @@ export function ApiPage() {
                         onChange={(draft) => updateActive(draft)}
                         onSave={() => void save()}
                         onSend={() => void send()}
+                        requestId={activeRequest.id}
                         saveState={saveStates[activeRequest.id] ?? "idle"}
                     />
                     <ResponsePanel draft={activeDraft} state={responseState} />

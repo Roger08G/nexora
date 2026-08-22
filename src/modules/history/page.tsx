@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { FiClock, FiTrash2 } from "react-icons/fi";
-import { toast } from "sonner";
+import { toast } from "@/shared/services/toast";
 import { useAppSettings } from "@/app/providers/AppSettingsProvider";
 import { useHistory } from "@/app/providers/HistoryProvider";
 import { useProject } from "@/app/providers/ProjectProvider";

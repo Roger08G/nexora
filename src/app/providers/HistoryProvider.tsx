@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
-import { toast } from "sonner";
+import { toast } from "@/shared/services/toast";
 import { useProject } from "@/app/providers/ProjectProvider";
 import {
     appendHistory,

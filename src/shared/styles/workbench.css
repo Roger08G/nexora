@@ -119,6 +119,7 @@
 .request-tabs {
     display: flex;
     min-height: 44px;
+    align-items: center;
     overflow-x: auto;
     overflow-y: hidden;
     border-bottom: 1px solid var(--border);
@@ -127,6 +128,7 @@
 
 .request-tab {
     display: flex;
+    height: 36px;
     min-width: 178px;
     max-width: 260px;
     align-items: center;
@@ -182,6 +184,17 @@
 .request-tabs__new:not(:disabled):hover {
     background: var(--surface-hover);
     color: var(--text);
+}
+
+.request-tab__close {
+    width: 30px;
+    height: 28px;
+    flex-basis: 30px;
+    margin-right: 5px;
+}
+
+.request-tabs__new {
+    margin-left: 4px;
 }
 
 .api-page__split {
@@ -647,24 +660,9 @@
     color: var(--text-muted);
 }
 
-.code-editor__template {
+.code-editor__body {
     min-height: 150px;
     flex: 1;
-}
-
-.code-editor__template .template-field__render,
-.code-editor__template textarea {
-    min-height: 100%;
-    padding: 15px 17px;
-    font-size: 12px;
-    line-height: 1.6;
-    white-space: pre-wrap;
-    overflow-wrap: anywhere;
-}
-
-.code-editor__template textarea {
-    height: 100%;
-    resize: none;
 }
 
 .tree-group__trigger[data-active="true"] {
@@ -939,18 +937,45 @@
     color: var(--cyan);
 }
 
-.response-result pre {
+.response-result__code {
     min-height: 0;
-    margin: 0;
-    padding: 15px 17px;
     flex: 1;
+}
+
+.response-headers {
+    min-height: 0;
+    flex: 1;
+    padding: 8px 14px 14px;
     overflow: auto;
-    color: #cfc3d6;
+}
+
+.response-header {
+    display: grid;
+    min-height: 35px;
+    align-items: start;
+    grid-template-columns: minmax(180px, 28%) minmax(0, 1fr);
+    gap: 18px;
+    padding: 9px 4px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.055);
     font-family: var(--mono);
-    font-size: 11.5px;
-    line-height: 1.55;
-    white-space: pre-wrap;
-    word-break: break-word;
+    font-size: 11px;
+    line-height: 1.45;
+}
+
+.response-header:last-child {
+    border-bottom: 0;
+}
+
+.response-header code {
+    color: var(--cyan);
+    font: inherit;
+    font-weight: 600;
+    overflow-wrap: anywhere;
+}
+
+.response-header span {
+    color: var(--text-soft);
+    overflow-wrap: anywhere;
 }
 
 .connection-summary {
@@ -1049,6 +1074,21 @@
     font-family: var(--mono);
 }
 
+.workspace-heading__actions .action-button span {
+    color: inherit;
+    font-family: inherit;
+}
+
+.workspace-heading__actions .postgres-execute {
+    background: linear-gradient(115deg, #bd6d2d, #e49b4d);
+    box-shadow: 0 5px 18px rgba(240, 166, 93, 0.18);
+    color: #fff;
+}
+
+.workspace-heading__actions .postgres-execute:not(:disabled):hover {
+    background: linear-gradient(115deg, #ca7633, #eeaa5b);
+}
+
 .workspace-heading__actions {
     display: flex;
     margin-left: auto;
@@ -1128,6 +1168,30 @@
     font-size: 11.5px;
 }
 
+.mongo-sidebar .connection-summary__icon,
+.mongo-sidebar .tree-group__trigger > svg:nth-child(2) {
+    color: var(--green);
+}
+
+.mongo-sidebar .connection-summary__icon {
+    background: rgba(99, 213, 138, 0.1);
+}
+
+.mongo-sidebar .module-sidebar__content {
+    display: flex;
+    flex-direction: column;
+}
+
+.mongo-sidebar .sidebar-disconnect {
+    width: calc(100% - 26px);
+    flex: 0 0 auto;
+    margin-top: auto;
+}
+
+.postgres-sidebar .sidebar-disconnect {
+    margin-bottom: 9px;
+}
+
 .sidebar-disconnect:hover {
     border-color: rgba(239, 107, 122, 0.35);
     background: var(--red-soft);
@@ -1178,14 +1242,8 @@
     color: var(--text-muted);
 }
 
-.document-card pre {
-    margin: 0;
-    padding: 14px 16px;
-    overflow: auto;
-    color: #c9bdcf;
-    font-family: var(--mono);
-    font-size: 11.5px;
-    line-height: 1.55;
+.document-card .code-viewer {
+    max-height: 340px;
 }
 
 .postgres-sidebar .table-tree-item > svg:nth-child(2) {
@@ -1236,40 +1294,9 @@
 }
 
 .sql-editor {
-    display: grid;
     min-height: 260px;
     flex: 0 1 47%;
-    grid-template-columns: 44px minmax(0, 1fr);
     border-bottom: 1px solid var(--border);
-    background: rgba(9, 8, 12, 0.48);
-}
-
-.sql-editor__gutter {
-    display: flex;
-    padding: 15px 9px;
-    align-items: end;
-    flex-direction: column;
-    border-right: 1px solid var(--border);
-    color: #514a59;
-    font-family: var(--mono);
-    font-size: 11px;
-    line-height: 1.65;
-    user-select: none;
-}
-
-.sql-editor textarea {
-    width: 100%;
-    height: 100%;
-    min-height: 0;
-    resize: none;
-    padding: 15px;
-    border: 0;
-    background: transparent;
-    color: #c9b9d4;
-    font-family: var(--mono);
-    font-size: 11.5px;
-    line-height: 1.65;
-    outline: 0;
 }
 
 .sql-results {
@@ -1636,18 +1663,12 @@
     color: var(--text);
 }
 
-.document-dialog textarea {
-    min-height: 0;
-    padding: 17px;
+.document-dialog__editor {
     flex: 1;
-    resize: none;
-    border: 0;
-    background: rgba(8, 7, 11, 0.55);
-    color: #d2c5db;
-    font-family: var(--mono);
-    font-size: 12px;
-    line-height: 1.6;
-    outline: 0;
+}
+
+.document-dialog__editor textarea {
+    background: transparent;
 }
 
 .document-dialog > .inline-error {
@@ -1871,6 +1892,140 @@
     font-family: var(--mono);
     font-size: 11.5px;
     font-weight: 500;
+}
+
+.history-metric .status-badge {
+    width: max-content;
+    max-width: 100%;
+    align-self: flex-start;
+}
+
+.mongo-schema,
+.mongo-indexes {
+    display: grid;
+    gap: 12px;
+}
+
+.mongo-schema {
+    overflow: hidden;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: rgba(18, 17, 23, 0.65);
+}
+
+.mongo-schema > header {
+    display: flex;
+    min-height: 58px;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
+}
+
+.mongo-schema > header > div {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.mongo-schema > header strong {
+    color: var(--text);
+    font-size: 12.5px;
+}
+
+.mongo-schema > header span,
+.mongo-schema > header small {
+    color: var(--text-muted);
+    font-size: 10.5px;
+}
+
+.mongo-schema > header small {
+    margin-left: auto;
+    font-family: var(--mono);
+}
+
+.mongo-schema__table {
+    min-width: 620px;
+}
+
+.mongo-schema__row {
+    display: grid;
+    min-height: 43px;
+    align-items: center;
+    grid-template-columns: minmax(190px, 1.2fr) minmax(230px, 1fr) minmax(130px, 0.6fr);
+    gap: 18px;
+    padding: 8px 14px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+    color: var(--text-muted);
+    font-size: 10.5px;
+}
+
+.mongo-schema__row:last-child {
+    border-bottom: 0;
+}
+
+.mongo-schema__row--header {
+    color: var(--text-faint);
+    font-size: 9.5px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+.mongo-schema__row code {
+    color: var(--cyan);
+    font-family: var(--mono);
+    overflow-wrap: anywhere;
+}
+
+.mongo-schema__row > div {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+}
+
+.mongo-type,
+.mongo-index-card header span {
+    padding: 2px 7px;
+    border: 1px solid rgba(168, 100, 245, 0.22);
+    border-radius: 999px;
+    background: var(--violet-soft);
+    color: #c896ff;
+    font-family: var(--mono);
+    font-size: 9.5px;
+}
+
+.mongo-index-card {
+    overflow: hidden;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: rgba(18, 17, 23, 0.65);
+}
+
+.mongo-index-card > header {
+    display: flex;
+    min-height: 45px;
+    align-items: center;
+    padding: 8px 13px;
+    border-bottom: 1px solid var(--border);
+}
+
+.mongo-index-card > header > div {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 7px;
+}
+
+.mongo-index-card header strong {
+    margin-right: 3px;
+    color: var(--cyan);
+    font-family: var(--mono);
+    font-size: 11.5px;
+}
+
+.mongo-index-card .code-viewer {
+    max-height: 240px;
 }
 
 .history-details__error,

@@ -1,5 +1,5 @@
 import { FiRefreshCw, FiSettings } from "react-icons/fi";
-import { toast } from "sonner";
+import { toast } from "@/shared/services/toast";
 import { useAppSettings } from "@/app/providers/AppSettingsProvider";
 import { SettingsField, SettingsToggle } from "@/modules/settings/components/SettingsField";
 import { ActionButton } from "@/shared/components/ui/ActionButton";

@@ -183,6 +183,16 @@
     content: "";
 }
 
+.activity-rail__button--neutral[data-active="true"],
+.activity-rail__button--neutral:hover {
+    color: #aaa4b2;
+}
+
+.activity-rail__button--neutral[data-active="true"]::before {
+    background: #aaa4b2;
+    box-shadow: 0 0 9px rgba(170, 164, 178, 0.48);
+}
+
 .activity-rail__button--violet[data-active="true"],
 .activity-rail__button--violet:hover {
     color: var(--violet);
@@ -410,6 +420,7 @@
 
 .module-sidebar__content {
     min-height: 0;
+    flex: 1;
     padding: 12px 0;
     overflow: auto;
 }
