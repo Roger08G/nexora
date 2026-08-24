@@ -1,18 +1,72 @@
-# Nexora
+<p align="center">
+  <img src="./images/logo.png" alt="Logo de Nexora" width="190">
+</p>
 
-Nexora es un workspace de desarrollo backend local-first para Windows, construido con Tauri,
-React, TypeScript y Rust. Su objetivo es centralizar pruebas de APIs REST y servidores locales de
-MongoDB y PostgreSQL dentro de proyectos versionables con Git.
+<h1 align="center">Nexora</h1>
 
-## Estado
+<p align="center">
+  Desarrollo backend local, privado y preparado para trabajar con Git en Windows.
+</p>
 
-El MVP local ya conecta el frontend con el núcleo Rust. Incluye:
+<p align="center">
+  <a href="https://github.com/Roger08G/nexora/actions/workflows/ci.yml"><img src="https://github.com/Roger08G/nexora/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/Roger08G/nexora/releases"><img src="https://img.shields.io/github/v/release/Roger08G/nexora?display_name=tag&sort=semver" alt="Versión"></a>
+  <a href="https://github.com/Roger08G/nexora/stargazers"><img src="https://img.shields.io/github/stars/Roger08G/nexora?style=flat" alt="Estrellas"></a>
+  <a href="https://github.com/Roger08G/nexora/network/members"><img src="https://img.shields.io/github/forks/Roger08G/nexora?style=flat" alt="Forks"></a>
+  <img src="https://img.shields.io/badge/Rust-stable-orange?logo=rust" alt="Rust">
+  <img src="https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=20232A" alt="React">
+  <img src="https://img.shields.io/badge/Tauri-2-24C8DB?logo=tauri&logoColor=white" alt="Tauri">
+  <img src="https://img.shields.io/badge/Windows-10%2F11-0078D4?logo=windows11&logoColor=white" alt="Windows">
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/Roger08G/nexora" alt="Licencia"></a>
+</p>
+
+Nexora es una aplicación de desarrollo backend local-first que reúne un cliente de APIs REST, un
+workspace MongoDB y un workbench PostgreSQL. Cada proyecto mantiene sus pruebas y definiciones en
+archivos revisables con Git, mientras los datos, credenciales y runtimes permanecen exclusivamente
+en local.
+
+![Vista previa de Nexora](./images/banner.png)
+
+## Arquitectura
+
+Nexora separa la interfaz React del núcleo nativo. Toda operación con red, archivos, credenciales o
+bases de datos atraviesa comandos Tauri validados y limitados mediante capabilities.
+
+```mermaid
+flowchart LR
+    subgraph Frontend["Interfaz de escritorio"]
+        Shell["React + TypeScript"]
+        Workspaces["API · MongoDB · PostgreSQL<br/>Historial · Monitores"]
+        Shell --> Workspaces
+    end
+
+    Bridge["IPC de Tauri<br/>capabilities limitadas"]
+
+    subgraph Core["Núcleo Rust"]
+        Commands["Comandos y validación"]
+        Http["Motor HTTP"]
+        Runtimes["Supervisores de runtimes"]
+        Storage["Persistencia y migraciones"]
+        Commands --> Http
+        Commands --> Runtimes
+        Commands --> Storage
+    end
+
+    Workspaces --> Bridge --> Commands
+    Http --> APIs["APIs locales o remotas"]
+    Runtimes --> MongoDB["MongoDB local o externo"]
+    Runtimes --> PostgreSQL["PostgreSQL local"]
+    Runtimes --> Keychain["Windows Credential Manager"]
+    Storage --> Versionable["requests/ · folders/ · monitors/<br/>Contenido versionable con Git"]
+    Storage --> Private[".nexora/runtime/<br/>Estado privado local"]
+```
+
+## Funciones
 
 - Shell de escritorio modular con navegación entre espacios de trabajo.
 - Selector inicial para abrir la carpeta raíz de un proyecto Nexora o crear uno nuevo.
 - Cliente REST con ejecución HTTP real, status, headers, body, duración y tamaño de respuesta.
-- Rutas, carpetas y monitores visibles en la raíz, con un JSON por recurso para obtener diffs
-  claros en Git.
+- Rutas, carpetas y monitores visibles en la raíz, con un JSON por recurso para obtener diffs claros en Git.
 - Carpetas persistentes, menú contextual para renombrar o eliminar rutas y guardado automático.
 - Pestañas de ruta cerrables con `Ctrl+W` sin permitir cerrar la última petición abierta.
 - Historial HTTP local con búsqueda, repetición y limpieza controlada.
@@ -20,8 +74,7 @@ El MVP local ya conecta el frontend con el núcleo Rust. Incluye:
 - MongoDB local administrado por proyecto y conexión opcional a servidores externos.
 - Consulta de MongoDB, creación de colecciones e inserción, edición y borrado de documentos.
 - Inspección de esquemas e índices MongoDB.
-- PostgreSQL 18.6 local administrado por proyecto, con esquemas, tablas, editor SQL y exportación
-  CSV.
+- PostgreSQL 18.6 local administrado por proyecto, con esquemas, tablas, editor SQL y exportación CSV.
 - Variables de sesión para resolver `{{referencias}}` sin guardar secretos en el proyecto.
 - Búsqueda global con `Ctrl+K` para módulos, peticiones, colecciones y tablas cargadas.
 - Ajustes locales persistentes y notificaciones Sonner para las operaciones principales.
@@ -34,7 +87,7 @@ administrativo interno. MongoDB exige filtros no vacíos para editar o borrar, y
 solo viven durante la sesión. El núcleo limita tiempos, respuestas HTTP, filas SQL, documentos
 MongoDB y conexiones simultáneas para mantener estable la aplicación.
 
-Todavía no forman parte de este MVP los workflows API → diff de base de datos, la importación de
+Todavía no forman parte de esta versión los workflows API → diff de base de datos, la importación de
 cURL/OpenAPI/Postman ni la ejecución de monitores cuando Nexora está cerrado.
 
 ## Tecnologías
@@ -42,7 +95,7 @@ cURL/OpenAPI/Postman ni la ejecución de monitores cuando Nexora está cerrado.
 - Tauri 2 y Rust.
 - React 19 y TypeScript.
 - Vite y Bun.
-- Three.js para la animación de inicio.
+- WebGL nativo para la animación SilkWave de inicio.
 
 ## Estructura
 
