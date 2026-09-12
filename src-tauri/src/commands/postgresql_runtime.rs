@@ -1,7 +1,7 @@
 use std::{
     fs::{self, OpenOptions},
     io::Write,
-    net::{TcpListener, TcpStream},
+    net::TcpListener,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     thread,
@@ -502,6 +502,7 @@ fn initialize_cluster_as(
     Ok(())
 }
 
+#[cfg(not(windows))]
 fn spawn_postgres(
     distribution: &PostgresDistribution,
     project_root: &Path,
@@ -549,6 +550,147 @@ fn spawn_postgres(
     Ok(runtime)
 }
 
+#[cfg(windows)]
+fn spawn_postgres(
+    distribution: &PostgresDistribution,
+    project_root: &Path,
+    project_id: &str,
+    data_path: &Path,
+    log_path: &Path,
+) -> Result<ManagedPostgresRuntime, AppError> {
+    let port = free_loopback_port()?;
+    let mut command = pg_ctl_start_command(distribution, data_path, log_path, port)?;
+    if log_path.exists() {
+        // pg_ctl will open this path itself; reject existing links/special files.
+        read_tail(log_path, 0)?;
+    }
+    let launcher_log_path = log_path.with_file_name("pg_ctl.log");
+    if launcher_log_path.exists() {
+        read_tail(&launcher_log_path, 0)?;
+    }
+    // cmd.exe redirects the server log without compatible sharing flags; the
+    // launcher must not retain a writable handle to that same file on Windows.
+    let log = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&launcher_log_path)?;
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(log.try_clone()?))
+        .stderr(Stdio::from(log));
+
+    // PostgreSQL refuses an administrative Windows token. Its official pg_ctl
+    // launcher creates a restricted token, as initdb already does. Do not retain
+    // pipes inherited by the long-lived server or mistake pg_ctl's PID for it.
+    let mut launcher = command.spawn()?;
+    let outcome = wait_for_pg_ctl(&mut launcher);
+    let process_id = postmaster_process(data_path)
+        .filter(|(pid, found_port)| *found_port == port && process_owns_loopback_port(*pid, port))
+        .map_or(0, |(pid, _)| pid);
+    let mut runtime = ManagedPostgresRuntime {
+        child: None,
+        connection_id: Uuid::new_v4().to_string(),
+        data_path: data_path.to_owned(),
+        database: MANAGED_DATABASE.into(),
+        pg_ctl_path: distribution.pg_ctl.clone(),
+        port,
+        process_id,
+        project_id: project_id.into(),
+        project_root: project_root.to_owned(),
+        version: distribution.version.clone(),
+    };
+    match outcome {
+        Ok(status) if status.success() && process_id != 0 && runtime.is_running() => Ok(runtime),
+        outcome => {
+            let detail = startup_error(&runtime, log_path);
+            let launcher_detail = read_tail(&launcher_log_path, 4096)
+                .ok()
+                .map(|contents| contents.chars().take(180).collect::<String>())
+                .unwrap_or_default();
+            // A timed-out pg_ctl can leave a started server behind. The runtime
+            // guard stops only the PID proven to own our requested loopback port.
+            runtime.shutdown();
+            let status = match outcome {
+                Ok(status) => status.to_string(),
+                Err(error) => error.to_string(),
+            };
+            Err(AppError::Internal(format!(
+                "PostgreSQL no pudo arrancar ({status}). {detail} {launcher_detail}"
+            )))
+        }
+    }
+}
+
+#[cfg(windows)]
+fn pg_ctl_start_command(
+    distribution: &PostgresDistribution,
+    data_path: &Path,
+    log_path: &Path,
+    port: u16,
+) -> Result<Command, AppError> {
+    // pg_ctl quotes these paths, but cmd.exe still expands environment markers
+    // inside quotes. Refuse expansion instead of allowing a project path to turn
+    // into a different command/path; no user text enters the -o options string.
+    let data_path = pg_ctl_shell_path(data_path)?;
+    let log_path = pg_ctl_shell_path(log_path)?;
+    let postgres = pg_ctl_shell_path(&distribution.postgres)?;
+    let mut command = hidden_command(&distribution.pg_ctl);
+    command
+        .arg("start")
+        .arg("-D")
+        .arg(data_path)
+        .arg("-p")
+        .arg(postgres)
+        .arg("-l")
+        .arg(log_path)
+        .arg("-o")
+        .arg(format!(
+            "-h 127.0.0.1 -p {port} -c max_connections=20 \
+             -c shared_buffers=64MB -c statement_timeout=30000"
+        ))
+        .arg("--wait")
+        .arg(format!("--timeout={}", STARTUP_TIMEOUT.as_secs()));
+    Ok(command)
+}
+
+#[cfg(windows)]
+fn pg_ctl_shell_path(path: &Path) -> Result<PathBuf, AppError> {
+    let path = external_process_path(path);
+    if path
+        .to_string_lossy()
+        .chars()
+        .any(|character| matches!(character, '%' | '!' | '"' | '\r' | '\n' | '\0'))
+    {
+        return Err(AppError::Validation(
+            "PostgreSQL necesita una ruta local sin %, !, comillas ni saltos de línea".into(),
+        ));
+    }
+    Ok(path)
+}
+
+#[cfg(windows)]
+fn wait_for_pg_ctl(child: &mut Child) -> Result<std::process::ExitStatus, AppError> {
+    let started = Instant::now();
+    // pg_ctl has its own 20-second startup timeout; also bound a stuck launcher.
+    while started.elapsed() < STARTUP_TIMEOUT + Duration::from_secs(3) {
+        match child.try_wait() {
+            Ok(Some(status)) => return Ok(status),
+            Ok(None) => thread::sleep(Duration::from_millis(100)),
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(error.into());
+            }
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    Err(AppError::Internal(
+        "El supervisor PostgreSQL excedió el tiempo de arranque".into(),
+    ))
+}
+
+#[cfg(not(windows))]
 fn wait_until_port_ready(
     runtime: &mut ManagedPostgresRuntime,
     log_path: &Path,
@@ -561,7 +703,7 @@ fn wait_until_port_ready(
                 startup_error(runtime, log_path)
             )));
         }
-        if TcpStream::connect_timeout(
+        if std::net::TcpStream::connect_timeout(
             &format!("127.0.0.1:{}", runtime.port)
                 .parse()
                 .map_err(|error| AppError::Internal(format!("Puerto local no válido: {error}")))?,
@@ -1044,10 +1186,22 @@ fn startup_error(runtime: &ManagedPostgresRuntime, path: &Path) -> String {
     let Ok(contents) = read_tail(path, 64 * 1024) else {
         return "No se pudo leer el diagnóstico de PostgreSQL".into();
     };
+    startup_log_message(&contents)
+}
+
+fn startup_log_message(contents: &str) -> String {
     let message = contents
         .lines()
         .rev()
-        .find(|line| line.contains("FATAL:") || line.contains("ERROR:"))
+        .find_map(|line| {
+            if line.contains("Execution of PostgreSQL by a user with administrative permissions") {
+                Some("PostgreSQL rechazó un token administrador; se requiere el lanzador restringido pg_ctl")
+            } else if line.contains("FATAL:") || line.contains("ERROR:") {
+                Some(line)
+            } else {
+                None
+            }
+        })
         .unwrap_or("PostgreSQL no pudo completar el arranque");
     message.chars().take(180).collect()
 }
@@ -1076,6 +1230,65 @@ mod tests {
     #[test]
     fn allocates_a_loopback_port() {
         assert_ne!(free_loopback_port().unwrap(), 0);
+    }
+
+    #[test]
+    fn recognizes_unprefixed_administrator_startup_errors() {
+        let diagnostic = super::startup_log_message(
+            "LOG: old checkpoint completed\n\
+             Execution of PostgreSQL by a user with administrative permissions is not\n\
+             permitted.\nThe server must be started under an unprivileged user ID.\n",
+        );
+        assert!(diagnostic.contains("token administrador"));
+        assert!(diagnostic.contains("pg_ctl"));
+        assert!(diagnostic.chars().count() <= 180);
+        assert_eq!(
+            super::startup_log_message("LOG: old checkpoint completed"),
+            "PostgreSQL no pudo completar el arranque"
+        );
+        assert_eq!(
+            super::startup_log_message(&format!("FATAL: {}", "é".repeat(300)))
+                .chars()
+                .count(),
+            180
+        );
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn uses_pg_ctl_with_fixed_loopback_options_and_safe_quoted_paths() {
+        let distribution = super::PostgresDistribution {
+            initdb: "C:/Nexora runtime/bin/initdb.exe".into(),
+            pg_ctl: "C:/Nexora runtime/bin/pg_ctl.exe".into(),
+            postgres: "C:/Nexora runtime/bin/postgres.exe".into(),
+            version: "test".into(),
+        };
+        let command = super::pg_ctl_start_command(
+            &distribution,
+            std::path::Path::new("C:/Proyecto local/data"),
+            std::path::Path::new("C:/Proyecto local/logs/postgresql.log"),
+            54321,
+        )
+        .unwrap();
+        let arguments = command
+            .get_args()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(arguments[0], "start");
+        assert!(arguments.windows(2).any(|pair| {
+            pair[0] == "-o"
+                && pair[1] == "-h 127.0.0.1 -p 54321 -c max_connections=20 -c shared_buffers=64MB -c statement_timeout=30000"
+        }));
+        assert!(arguments.contains(&"--wait".into()));
+        assert!(arguments.contains(&"--timeout=20".into()));
+        for path in [
+            "C:/%EXPAND%/data",
+            "C:/!EXPAND!/data",
+            "C:/quote\"/data",
+            "C:/line\n/data",
+        ] {
+            assert!(super::pg_ctl_shell_path(std::path::Path::new(path)).is_err());
+        }
     }
 
     #[test]

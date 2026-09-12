@@ -18,6 +18,7 @@ prueba. No es una certificación ni una prueba sobre servidores de terceros.
 | Sesión       | Estado de interfaz y variables de sesión aislados por raíz, incluso entre clones con el mismo ID.         | Claves del contexto y regresión de proyecto clonado.               |
 | MongoDB      | Comandos del explorador/CRUD: respuesta de 30 s y hasta 16 operaciones pendientes sin cancelar el driver. | Tests del supervisor y CRUD real.                                  |
 | PostgreSQL   | Conservación de columnas en resultados vacíos y de nombres repetidos sin pérdida de valores.              | Consultas reales y exportación CSV.                                |
+| Arranque SQL | Uso de `pg_ctl` con privilegios reducidos en Windows, timeout y verificación de PID/puerto.               | IPC real en Windows local y runner de CI elevado.                  |
 | Distribución | Runtimes junto al ejecutable, versiones y arquitectura comprobadas, inventario SHA-256.                   | Verificación del paquete y pruebas de manipulación del manifiesto. |
 
 ## Dependencias
@@ -66,3 +67,8 @@ Dos clones con el mismo UUID bajo la misma cuenta comparten la entrada nativa de
 el aislamiento por raíz descrito arriba se aplica a la interfaz y sus variables de sesión.
 Un timeout MongoDB devuelve el control a la interfaz, pero la operación puede seguir terminando
 en segundo plano. Antes de repetir una escritura debe comprobarse su resultado.
+
+El arranque PostgreSQL utiliza el mecanismo de proceso restringido de `pg_ctl`, también cuando
+Nexora hereda un token elevado. Las rutas con marcadores de expansión de `cmd.exe` se rechazan si
+Windows no ofrece un nombre corto seguro, para no introducir interpretación de variables al
+lanzar el motor. No se modifica la configuración de UAC ni se instala un servicio.

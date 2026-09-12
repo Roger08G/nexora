@@ -211,6 +211,10 @@ clúster real en `.nexora/runtime/postgresql`, lo enlaza exclusivamente a `127.0
 libre y prepara la base `nexora`. Cada proyecto tiene una contraseña aleatoria almacenada en Windows
 Credential Manager. Los datos, logs y credenciales quedan fuera de Git.
 
+En Windows, el arranque utiliza `pg_ctl` para crear un proceso con privilegios reducidos, incluso
+si Nexora se ha abierto como administrador. Se comprueban el PID y el puerto local del servidor;
+no se desactiva UAC ni se registra un servicio de Windows.
+
 El rol `nexora_admin` queda reservado para la inicialización y el mantenimiento interno. Las
 consultas de la interfaz utilizan `nexora_app`, sin privilegios de superusuario, creación de roles o
 bases de datos ni pertenencia al rol administrativo. Los clústeres creados por versiones alpha

@@ -3,6 +3,31 @@ mod common;
 use common::{TempDirectory, TestApp};
 use serde_json::{json, Value};
 
+fn start_postgresql(app: &TestApp, project: &TempDirectory) -> Value {
+    app.invoke(
+        "start_managed_postgresql",
+        json!({ "projectRoot": project.string() }),
+    )
+    .unwrap_or_else(|error| {
+        use std::io::{Read, Seek, SeekFrom};
+
+        // Only startup diagnostics from this empty, disposable test project;
+        // never enumerate host paths, environment values or keyring secrets.
+        let path = project
+            .path()
+            .join(".nexora/runtime/postgresql/logs/postgresql.log");
+        let diagnostic = (|| -> std::io::Result<String> {
+            let mut file = std::fs::File::open(path)?;
+            let length = file.metadata()?.len().min(4096);
+            file.seek(SeekFrom::End(-(length as i64)))?;
+            let mut bytes = Vec::new();
+            file.take(length).read_to_end(&mut bytes)?;
+            Ok(String::from_utf8_lossy(&bytes).into_owned())
+        })();
+        panic!("start_managed_postgresql: {error}; test startup log (max 4 KiB): {diagnostic:?}");
+    })
+}
+
 struct CredentialCleanup {
     project_id: String,
     service: &'static str,
@@ -155,9 +180,13 @@ fn managed_postgresql_crud_runs_end_to_end_through_tauri_ipc() {
     );
     let _credential = CredentialCleanup::new(&project, "Nexora Managed PostgreSQL");
 
-    let connection = app.ok("start_managed_postgresql", json!({ "projectRoot": root }));
+    let connection = start_postgresql(&app, &project);
     let connection_id = connection["connectionId"].as_str().unwrap();
-    assert!(connection["port"].as_u64().unwrap() > 0);
+    let port = u16::try_from(connection["port"].as_u64().unwrap()).unwrap();
+    assert!(port > 0);
+    let repeated = start_postgresql(&app, &project);
+    assert_eq!(repeated["connectionId"], connection["connectionId"]);
+    assert_eq!(repeated["port"], connection["port"]);
     assert_eq!(
         app.ok("managed_postgresql_status", json!({}))["active"],
         true
@@ -266,8 +295,43 @@ fn managed_postgresql_crud_runs_end_to_end_through_tauri_ipc() {
     );
 
     app.ok("stop_managed_postgresql", json!({}));
+    app.ok("stop_managed_postgresql", json!({}));
+    assert!(std::net::TcpStream::connect(("127.0.0.1", port)).is_err());
     assert_eq!(
         app.ok("managed_postgresql_status", json!({}))["active"],
         false
     );
+
+    let restarted = start_postgresql(&app, &project);
+    let persisted = app.ok(
+        "execute_postgresql",
+        json!({
+            "allowWrite": false,
+            "connectionId": restarted["connectionId"],
+            "rowLimit": 500,
+            "sql": "SELECT name FROM users ORDER BY id"
+        }),
+    );
+    assert_eq!(persisted["rows"], json!([{ "name": "Nexora" }]));
+    app.ok("stop_managed_postgresql", json!({}));
+    let restarted_port = u16::try_from(restarted["port"].as_u64().unwrap()).unwrap();
+    assert!(std::net::TcpStream::connect(("127.0.0.1", restarted_port)).is_err());
+
+    let data = project.path().join(".nexora/runtime/postgresql/data");
+    std::fs::write(
+        data.join("postgresql.auto.conf"),
+        "nexora_deliberately_invalid_setting = 'startup-failure-fixture'\n",
+    )
+    .unwrap();
+    let failed = app.error(
+        "start_managed_postgresql",
+        json!({ "projectRoot": root }),
+        "internal_error",
+    );
+    assert!(failed["message"].as_str().unwrap().contains("FATAL:"));
+    assert_eq!(
+        app.ok("managed_postgresql_status", json!({}))["active"],
+        false
+    );
+    assert!(!data.join("postmaster.pid").exists());
 }
