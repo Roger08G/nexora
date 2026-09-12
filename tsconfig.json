@@ -5,10 +5,9 @@
         "lib": ["ES2020", "DOM", "DOM.Iterable"],
         "module": "ESNext",
         "skipLibCheck": true,
-        "baseUrl": ".",
         "paths": {
-            "@/*": ["src/*"],
-            "@tauri/*": ["src-tauri/*"]
+            "@/*": ["./src/*"],
+            "@tauri/*": ["./src-tauri/*"]
         },
         /* Bundler mode */
         "moduleResolution": "bundler",
@@ -24,6 +23,7 @@
         "noFallthroughCasesInSwitch": true
     },
     "include": ["src"],
+    "exclude": ["src/**/*.test.ts", "src/**/*.test.tsx"],
     "references": [
         {
             "path": "./tsconfig.node.json"

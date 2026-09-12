@@ -1,15 +1,26 @@
 diff --git a/index.js b/index.js
-index 23384ea16bb848616886f356d8d69f94325535bf..20ab92f4a78a60f1fec51313471008790249c26c 100644
 --- a/index.js
 +++ b/index.js
-@@ -127,5 +127,10 @@ class Extractor {
+@@ -61,1 +61,1 @@ class Extractor {
+-          if (relativeDestDir.split(path.sep).includes('..')) {
++          if (path.isAbsolute(relativeDestDir) || relativeDestDir.split(path.sep).includes('..')) {
+@@ -125,1 +125,0 @@ class Extractor {
+-    const readStream = await promisify(this.zipfile.openReadStream.bind(this.zipfile))(entry)
+@@ -127,8 +126,14 @@ class Extractor {
      if (symlink) {
-       const link = await getStream(readStream)
-+      const resolvedLink = path.resolve(path.dirname(dest), link)
-+      const relativeLink = path.relative(this.opts.dir, resolvedLink)
-+      if (relativeLink === '..' || relativeLink.startsWith(`..${path.sep}`) || path.isAbsolute(relativeLink)) {
-+        throw new Error(`Out of bound symlink target "${link}" found while processing file ${entry.fileName}`)
-+      }
-       debug('creating symlink', link, dest)
-       await fs.symlink(link, dest)
+-      const link = await getStream(readStream)
+-      debug('creating symlink', link, dest)
+-      await fs.symlink(link, dest)
++      throw new Error(`Symlink archive entries are disabled: ${entry.fileName}`)
      } else {
++      const existing = await fs.lstat(dest).catch(err => {
++        if (err.code === 'ENOENT') return null
++        throw err
++      })
++      if (existing && (!existing.isFile() || existing.isSymbolicLink())) {
++        throw new Error(`Unsafe archive destination: ${entry.fileName}`)
++      }
++      const readStream = await promisify(this.zipfile.openReadStream.bind(this.zipfile))(entry)
+       await pipeline(readStream, createWriteStream(dest, { mode: procMode }))
+     }
+   }
