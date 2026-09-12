@@ -27,6 +27,24 @@ en local.
 
 ![Vista previa de Nexora](./images/banner.png)
 
+## Descarga para Windows
+
+La distribución está disponible en [Releases](https://github.com/Roger08G/nexora/releases):
+
+- **Portable:** extrae el ZIP completo y abre `Nexora.exe`. Incluye MongoDB, PostgreSQL y sus
+  bibliotecas; conserva la carpeta `runtimes/` junto al ejecutable.
+- **Instalador `.exe`:** instala Nexora y los mismos motores para la cuenta de Windows actual.
+  Prepara WebView2 si falta; ese primer paso puede necesitar conexión a Internet.
+- **Código fuente:** GitHub genera los archivos ZIP y TAR.GZ desde el tag de cada versión.
+
+Requiere Windows 10/11 x64 y Microsoft Edge WebView2. Compara las descargas con `SHA256SUMS.txt`
+antes de utilizarlas. La versión `2.0.0` se distribuye sin firma Authenticode.
+
+Puedes elegir cualquier carpeta para tus proyectos. El programa no instala servicios de bases de
+datos ni necesita una cuenta o un servidor en la nube. Los ajustes de interfaz y las credenciales
+pertenecen a la cuenta de Windows; el ZIP portable no convierte las credenciales existentes en
+transferibles entre equipos. Para mover una base a otra cuenta, exporta/restaura sus datos.
+
 ## Arquitectura
 
 Nexora separa la interfaz React del núcleo nativo. Toda operación con red, archivos, credenciales o
@@ -115,10 +133,11 @@ Las importaciones internas utilizan el alias `@/`.
 
 ## Desarrollo
 
-Requisitos: Bun y el toolchain estable de Rust.
+Requisitos: Bun 1.3.14, Node.js 24 para las pruebas WebDriver, Rust 1.98.0 y las herramientas C++
+de Visual Studio para Windows. `rust-toolchain.toml` fija el compilador utilizado en CI.
 
 ```bash
-bun install
+bun ci
 bun run dev
 ```
 
@@ -161,10 +180,11 @@ mientras Nexora permanece abierto y utilizan los valores de sesión que existan 
 
 ## MongoDB local administrado
 
-En Windows, Nexora busca MongoDB Community Server 8.3.8 en:
+La distribución Windows incluye MongoDB Community Server 8.3.11. Nexora busca primero el motor
+en `runtimes/mongodb/8.3.11/` junto al ejecutable y, para desarrollo, en:
 
 ```text
-%LOCALAPPDATA%\Nexora\runtimes\mongodb\8.3.8\mongod.exe
+%LOCALAPPDATA%\Nexora\runtimes\mongodb\8.3.11\mongod.exe
 ```
 
 El proceso se inicia oculto en `127.0.0.1` con un puerto libre, autenticación habilitada y datos
@@ -172,13 +192,15 @@ aislados en `.nexora/runtime/mongodb`. Nexora crea una credencial distinta por p
 contraseña en Windows Credential Manager; no la escribe en Git ni la expone en la interfaz. Al
 desconectar o cerrar Nexora, el proceso administrado se detiene.
 
-La variable `NEXORA_MONGOD_PATH` permite utilizar otro ejecutable durante desarrollo. No se debe
-versionar `mongod.exe` dentro del repositorio.
+La variable `NEXORA_MONGOD_PATH` permite utilizar otro ejecutable durante desarrollo. Se conserva
+la detección del directorio legado `8.3.8` para instalaciones anteriores, pero los paquetes nuevos
+incluyen `8.3.11`. No se debe versionar `mongod.exe` dentro del repositorio.
 
 ## PostgreSQL local administrado
 
 Nexora utiliza el ZIP de binarios para Windows publicado por EDB y enlazado desde PostgreSQL.org.
-Busca PostgreSQL 18.6 en:
+La distribución incluye PostgreSQL 18.6 (paquete EDB revisión 3) en
+`runtimes/postgresql/18.6/pgsql/` junto al ejecutable. Para desarrollo también busca en:
 
 ```text
 %LOCALAPPDATA%\Nexora\runtimes\postgresql\18.6\pgsql\
@@ -205,6 +227,8 @@ debe apuntar a la carpeta que contiene `bin`, `lib` y `share`.
 bun run fmt:check
 bun run audit:frontend
 bun run typecheck
+bun run typecheck:tests
+bun run test:unit
 bun run build
 cargo fmt --manifest-path src-tauri/Cargo.toml --check
 cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings
@@ -243,11 +267,14 @@ cargo test --manifest-path src-tauri/Cargo.toml migrates_the_legacy_superuser_to
 
 GitHub Actions ejecuta en Windows las comprobaciones de formato, TypeScript, build frontend,
 auditorías de Bun y RustSec, Clippy, tests Rust, compilación con la característica WebView y build de
-Tauri. Dependabot revisa cada semana las dependencias de Bun, Cargo y GitHub Actions.
+Tauri. También descarga motores oficiales con SHA-256 fijado y ejecuta pruebas reales de MongoDB,
+PostgreSQL y WebView. Las regresiones frontend y del extractor ZIP se ejecutan en Windows y Linux.
+Dependabot agrupa las actualizaciones menores y parches para facilitar su revisión.
 
-La auditoría frontend actualiza dependencias transitivas vulnerables y verifica mediante una ZIP
-maliciosa de regresión el parche local aplicado a `extract-zip`, cuyo upstream todavía no ofrece una
-versión corregida.
+La auditoría frontend verifica primero el parche local de `extract-zip` contra archivos ZIP con
+enlaces y entradas duplicadas, además de una extracción válida. Solo después acepta las dos
+excepciones correspondientes a ese paquete, cuyo upstream no ofrece una versión corregida.
+Los demás avisos de seguridad hacen fallar el control.
 
 ## Aplicación de escritorio
 
@@ -258,6 +285,11 @@ bun run tauri build
 
 Nexora funciona sin cuentas, nube ni telemetría. Los proyectos y sus rutas de API permanecen en
 local y se pueden versionar con Git sin incluir los valores de las variables de sesión.
+
+Para generar el instalador completo y el ZIP portable, consulta
+[scripts/release/README.md](scripts/release/README.md). El empaquetado comprueba versiones,
+arquitectura y hashes, e incluye las licencias de los motores. Los binarios y el staging de
+distribución quedan en `artifacts/`, excluido de Git.
 
 ## Seguridad
 

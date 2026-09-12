@@ -7,15 +7,15 @@ privada.
 
 ## Versiones con soporte
 
-| Versión         | Correcciones de seguridad |
-| --------------- | ------------------------- |
-| `0.4.x-alpha`   | Sí                        |
-| `0.3.x-alpha`   | Sí                        |
-| < `0.2.x-alpha` | No                        |
+| Versión | Correcciones de seguridad |
+| ------- | ------------------------- |
+| `2.x`   | Sí                        |
+| `1.x`   | Actualizar a `2.x`        |
+| Alpha   | No                        |
 
-Las versiones alpha pueden introducir cambios incompatibles cuando sean necesarios para cerrar una
-vulnerabilidad. Se recomienda reproducir el problema sobre el último commit de `main` antes de
-reportarlo.
+Se recomienda reproducir el problema con la última versión estable antes de reportarlo.
+Los parches se incorporan a `main` y se distribuyen en una nueva versión; las publicaciones
+anteriores conservan sus archivos originales.
 
 ## Cómo reportar una vulnerabilidad
 
@@ -78,10 +78,22 @@ Normalmente quedan fuera de alcance:
 
 ## Uso seguro
 
+- Descarga la distribución desde los releases del repositorio y compara los archivos con
+  `SHA256SUMS.txt`. Los ejecutables de `2.0.0` se distribuyen sin firma Authenticode.
+- La edición portable incluye motores y dependencias nativas. Las credenciales de las bases
+  locales siguen ligadas a la cuenta de Windows que las creó: mover el proyecto a otro equipo
+  requiere exportar/restaurar los datos o una migración de credenciales independiente.
+
 - Descarga MongoDB y PostgreSQL únicamente de fuentes oficiales y utiliza distribuciones de
   confianza.
 - No publiques `.nexora/runtime`; contiene datos locales, logs y estado interno.
 - Conserva los secretos en variables de sesión y nunca dentro de peticiones versionadas.
+- Las redirecciones HTTP automáticas se limitan al mismo origen para evitar reenviar headers,
+  parámetros o cuerpos sensibles a otro servidor. Las respuestas a otros orígenes se muestran
+  como `3xx` para poder revisarlas.
 - Utiliza cuentas con privilegios mínimos al conectar bases de datos externas.
 - Revisa las operaciones destructivas antes de confirmarlas y mantén copias de seguridad de los
   datos importantes.
+
+La revisión y los controles de la versión `2.0.0` están documentados en
+[docs/security-review-2.0.0.md](docs/security-review-2.0.0.md).

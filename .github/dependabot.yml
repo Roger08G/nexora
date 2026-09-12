@@ -9,6 +9,10 @@ updates:
           time: "06:00"
           timezone: Europe/Madrid
       open-pull-requests-limit: 10
+      groups:
+          frontend:
+              patterns: ["*"]
+              update-types: ["minor", "patch"]
       commit-message:
           prefix: deps
 
@@ -21,6 +25,10 @@ updates:
           time: "06:15"
           timezone: Europe/Madrid
       open-pull-requests-limit: 10
+      groups:
+          rust:
+              patterns: ["*"]
+              update-types: ["minor", "patch"]
       commit-message:
           prefix: deps
 
@@ -33,5 +41,8 @@ updates:
           time: "06:30"
           timezone: Europe/Madrid
       open-pull-requests-limit: 10
+      groups:
+          actions:
+              patterns: ["*"]
       commit-message:
           prefix: ci

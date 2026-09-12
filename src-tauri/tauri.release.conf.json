@@ -1,0 +1,21 @@
+{
+    "$schema": "https://schema.tauri.app/config/2",
+    "bundle": {
+        "targets": ["nsis"],
+        "resources": {
+            "../artifacts/windows-runtime/": ""
+        },
+        "windows": {
+            "allowDowngrades": false,
+            "webviewInstallMode": {
+                "type": "embedBootstrapper",
+                "silent": true
+            },
+            "nsis": {
+                "installMode": "currentUser",
+                "languages": ["Spanish", "English"],
+                "displayLanguageSelector": true
+            }
+        }
+    }
+}
