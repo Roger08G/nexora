@@ -276,6 +276,15 @@ describe("Nexora en el WebView real de Tauri", () => {
         await clickButton("Cambiar nombre");
         await expect(await button("Ruta WebView renombrada")).toBeDisplayed();
 
+        await browser.waitUntil(
+            () =>
+                findSavedRequestByName("Ruta WebView renombrada", false)?.url ===
+                "{{baseUrl}}/health?autosave=1",
+            {
+                timeout: 15_000,
+                timeoutMsg: "La petición renombrada no se persistió",
+            },
+        );
         const stored = findSavedRequestByName("Ruta WebView renombrada");
         if (!stored) throw new Error("La petición renombrada no se persistió");
         expect(stored.url).toBe("{{baseUrl}}/health?autosave=1");
