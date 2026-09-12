@@ -51,7 +51,7 @@ ese mismo commit. El manifiesto registra HEAD, pero no sustituye esa comprobaci√
 ```powershell
 bun run tauri build --no-bundle --ci -- --locked
 ./scripts/release/package-windows.ps1 -PackageOnly -BinaryPath ./src-tauri/target/release/nexora.exe
-./scripts/release/verify-windows-package.ps1 -Path ./artifacts/releases/Nexora_2.0.0_windows-x64-portable.zip
+./scripts/release/verify-windows-package.ps1 -Path ./artifacts/releases/Nexora_2.1.0_windows-x64-portable.zip
 ```
 
 Si la compilaci√≥n usa `CARGO_TARGET_DIR`, pasa la ruta real del ejecutable. No hay rutas personales

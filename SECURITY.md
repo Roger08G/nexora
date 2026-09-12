@@ -79,7 +79,7 @@ Normalmente quedan fuera de alcance:
 ## Uso seguro
 
 - Descarga la distribución desde los releases del repositorio y compara los archivos con
-  `SHA256SUMS.txt`. Los ejecutables de `2.0.0` se distribuyen sin firma Authenticode.
+  `SHA256SUMS.txt`. Los ejecutables de `2.1.0` se distribuyen sin firma Authenticode.
 - La edición portable incluye motores y dependencias nativas. Las credenciales de las bases
   locales siguen ligadas a la cuenta de Windows que las creó: mover el proyecto a otro equipo
   requiere exportar/restaurar los datos o una migración de credenciales independiente.

@@ -38,7 +38,7 @@ La distribución está disponible en [Releases](https://github.com/Roger08G/nexo
 - **Código fuente:** GitHub genera los archivos ZIP y TAR.GZ desde el tag de cada versión.
 
 Requiere Windows 10/11 x64 y Microsoft Edge WebView2. Compara las descargas con `SHA256SUMS.txt`
-antes de utilizarlas. La versión `2.0.0` se distribuye sin firma Authenticode.
+antes de utilizarlas. La versión `2.1.0` se distribuye sin firma Authenticode.
 
 Puedes elegir cualquier carpeta para tus proyectos. El programa no instala servicios de bases de
 datos ni necesita una cuenta o un servidor en la nube. Los ajustes de interfaz y las credenciales

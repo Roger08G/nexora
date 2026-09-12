@@ -83,7 +83,7 @@ export function ProjectStartPage() {
                         </span>
                     ))}
                 </div>
-                <span>v2.0.0 · Tauri · React · Rust</span>
+                <span>v2.1.0 · Tauri · React · Rust</span>
             </footer>
         </section>
     );
