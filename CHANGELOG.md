@@ -1,12 +1,5 @@
 # Registro de cambios
 
-## 2.1.0 - 2026-09-12
-
-- Se restaura el logotipo original en la aplicación, la documentación y los iconos de escritorio
-  e instalación, conservando el recurso optimizado de 128 px en la interfaz.
-- Se actualiza el versionado de la aplicación y de los paquetes Windows a `2.1.0`, sin cambios
-  en las funcionalidades, dependencias ni mejoras de seguridad de `2.0.0`.
-
 ## 2.0.0 - 2026-09-12
 
 ### Seguridad y correcciones
