@@ -4,7 +4,7 @@ import { join } from "node:path";
 export const E2E_API_PORT = 43_127;
 export const E2E_API_URL = `http://127.0.0.1:${E2E_API_PORT}`;
 
-export function createProjectFixture(root: string) {
+export function createProjectFixture(root: string, name = "Nexora WebView E2E") {
     const nexora = join(root, ".nexora");
     mkdirSync(nexora, { recursive: true });
     mkdirSync(join(root, "folders"), { recursive: true });
@@ -14,7 +14,7 @@ export function createProjectFixture(root: string) {
 
     writeJson(join(nexora, "project.json"), {
         id: "00000000-0000-4000-8000-0000000000e2",
-        name: "Nexora WebView E2E",
+        name,
         schemaVersion: 2,
     });
     writeFileSync(join(nexora, ".gitignore"), "runtime/\n", "utf8");

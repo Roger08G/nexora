@@ -1,4 +1,5 @@
 const port = Number(process.argv[2]);
+const delayedResponses = new Map<string, () => void>();
 
 if (!Number.isInteger(port) || port < 1 || port > 65_535) {
     throw new Error("El puerto E2E no es válido");
@@ -19,6 +20,34 @@ const server = Bun.serve({
 
         if (url.pathname === "/health") {
             return Response.json({ ok: true, service: "nexora-e2e" }, { headers });
+        }
+
+        if (url.pathname === "/delay-state") {
+            return Response.json(
+                { pending: delayedResponses.has(url.searchParams.get("key") ?? "") },
+                { headers },
+            );
+        }
+
+        if (url.pathname === "/release-delay" && method === "POST") {
+            delayedResponses.get(url.searchParams.get("key") ?? "")?.();
+            return new Response(null, { headers, status: 204 });
+        }
+
+        if (url.pathname === "/delay") {
+            const key = url.searchParams.get("key") ?? "default";
+            await new Promise<void>((resolve) => {
+                const timer = setTimeout(() => {
+                    delayedResponses.delete(key);
+                    resolve();
+                }, 20_000);
+                delayedResponses.set(key, () => {
+                    clearTimeout(timer);
+                    delayedResponses.delete(key);
+                    resolve();
+                });
+            });
+            return Response.json({ marker: "late-response", key }, { headers });
         }
 
         if (url.pathname === "/echo") {

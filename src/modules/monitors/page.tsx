@@ -19,6 +19,7 @@ import {
 import type { LocalMonitor, MonitorRuntimeState } from "@/modules/monitors/types";
 import { ActionButton } from "@/shared/components/ui/ActionButton";
 import { getErrorMessage } from "@/shared/services/native";
+import { KeyedTaskQueue } from "@/shared/services/async-tasks";
 
 export function MonitorsPage() {
     const { settings } = useAppSettings();
@@ -40,6 +41,23 @@ export function MonitorsPage() {
     const valuesRef = useRef(values);
     const timeoutRef = useRef(settings.requestTimeoutMs);
     const runningIds = useRef(new Set<string>());
+    const deletingIds = useRef(new Set<string>());
+    const monitorQueue = useRef(new KeyedTaskQueue());
+    const monitorsRef = useRef(monitors);
+    const mounted = useRef(true);
+
+    useEffect(
+        () => () => {
+            mounted.current = false;
+        },
+        [],
+    );
+
+    function updateMonitors(update: (current: LocalMonitor[]) => LocalMonitor[]) {
+        const next = update(monitorsRef.current);
+        monitorsRef.current = next;
+        setMonitors(next);
+    }
 
     useEffect(() => {
         requestsRef.current = requests;
@@ -58,7 +76,7 @@ export function MonitorsPage() {
         Promise.all([loadMonitors(project.root), loadRequests(project.root)])
             .then(([savedMonitors, savedRequests]) => {
                 if (!active) return;
-                setMonitors(savedMonitors);
+                updateMonitors(() => savedMonitors);
                 setRequests(savedRequests);
                 requestsRef.current = savedRequests;
                 setSelectedId(savedMonitors[0]?.id ?? null);
@@ -78,31 +96,40 @@ export function MonitorsPage() {
         };
     }, [project]);
 
+    const hasScheduledMonitors = monitors.some((monitor) => monitor.enabled);
     useEffect(() => {
+        if (!hasScheduledMonitors) return;
         const timer = window.setInterval(() => setNow(Date.now()), 1_000);
         return () => window.clearInterval(timer);
-    }, []);
+    }, [hasScheduledMonitors]);
 
     const runMonitor = useCallback(
         async (monitor: LocalMonitor, notify: boolean) => {
-            if (runningIds.current.has(monitor.id)) return;
+            if (
+                !mounted.current ||
+                deletingIds.current.has(monitor.id) ||
+                runningIds.current.has(monitor.id)
+            )
+                return;
             runningIds.current.add(monitor.id);
             setRuntimeState(monitor.id, { error: undefined, status: "running" });
+            const variables = valuesRef.current;
+            const timeout = timeoutRef.current;
+            let runningRequest: SavedRequest | undefined;
             try {
                 if (!project) throw new Error("No hay un proyecto cargado.");
                 const currentRequests = await loadRequests(project.root);
+                if (!mounted.current || deletingIds.current.has(monitor.id)) return;
                 setRequests(currentRequests);
                 requestsRef.current = currentRequests;
                 const request = currentRequests.find(
                     (candidate) => candidate.id === monitor.requestId,
                 );
                 if (!request) throw new Error("La petición enlazada ya no existe.");
-                const response = await executeRequest(
-                    request,
-                    valuesRef.current,
-                    timeoutRef.current,
-                );
+                runningRequest = request;
+                const response = await executeRequest(request, variables, timeout);
                 await record({ request, response, source: "monitor" });
+                if (!mounted.current || deletingIds.current.has(monitor.id)) return;
                 const successful = response.status < 400;
                 const responseError = successful
                     ? undefined
@@ -131,10 +158,9 @@ export function MonitorsPage() {
                 }
             } catch (error) {
                 const message = getErrorMessage(error);
-                const request = requestsRef.current.find(
-                    (candidate) => candidate.id === monitor.requestId,
-                );
+                const request = runningRequest;
                 if (request) await record({ error: message, request, source: "monitor" });
+                if (!mounted.current || deletingIds.current.has(monitor.id)) return;
                 setRuntime((current) => ({
                     ...current,
                     [monitor.id]: {
@@ -225,7 +251,7 @@ export function MonitorsPage() {
                 requestName: request.name,
                 updatedAtMs: 0,
             });
-            setMonitors((current) => [...current, saved]);
+            updateMonitors((current) => [...current, saved]);
             setSelectedId(saved.id);
             setCreating(false);
             toast.success("Monitor local creado", { description: saved.name });
@@ -254,25 +280,35 @@ export function MonitorsPage() {
 
     async function updateMonitor(changes: Partial<LocalMonitor>) {
         if (!project || !selected) return;
-        try {
-            const saved = await persistMonitor(project.root, { ...selected, ...changes });
-            setMonitors((current) =>
-                current.map((monitor) => (monitor.id === saved.id ? saved : monitor)),
-            );
-            toast.success("Monitor actualizado", { description: saved.name });
-        } catch (error) {
-            toast.error("No se pudo actualizar el monitor", {
-                description: getErrorMessage(error),
-            });
-        }
+        return monitorQueue.current.enqueue(selected.id, async () => {
+            if (deletingIds.current.has(selected.id)) return;
+            const latest = monitorsRef.current.find((monitor) => monitor.id === selected.id);
+            if (!latest) return;
+            try {
+                const saved = await persistMonitor(project.root, { ...latest, ...changes });
+                updateMonitors((current) =>
+                    current.map((monitor) => (monitor.id === saved.id ? saved : monitor)),
+                );
+                toast.success("Monitor actualizado", { description: saved.name });
+            } catch (error) {
+                toast.error("No se pudo actualizar el monitor", {
+                    description: getErrorMessage(error),
+                });
+            }
+        });
     }
 
     async function deleteMonitor() {
-        if (!project || !deleteTarget) return;
+        if (!project || !deleteTarget || deletingIds.current.has(deleteTarget.id)) return;
+        deletingIds.current.add(deleteTarget.id);
         try {
-            await deleteSavedMonitor(project.root, deleteTarget.id);
-            const remaining = monitors.filter((monitor) => monitor.id !== deleteTarget.id);
-            setMonitors(remaining);
+            await monitorQueue.current.enqueue(deleteTarget.id, () =>
+                deleteSavedMonitor(project.root, deleteTarget.id),
+            );
+            const remaining = monitorsRef.current.filter(
+                (monitor) => monitor.id !== deleteTarget.id,
+            );
+            updateMonitors(() => remaining);
             setSelectedId(remaining[0]?.id ?? null);
             setRuntime((current) => {
                 const next = { ...current };
@@ -282,6 +318,7 @@ export function MonitorsPage() {
             toast.success("Monitor eliminado", { description: deleteTarget.name });
             setDeleteTarget(null);
         } catch (error) {
+            deletingIds.current.delete(deleteTarget.id);
             toast.error("No se pudo eliminar el monitor", {
                 description: getErrorMessage(error),
             });

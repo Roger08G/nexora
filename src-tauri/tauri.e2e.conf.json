@@ -1,4 +1,5 @@
 {
+    "identifier": "com.roger-gomez-martinez.nexora.e2e",
     "build": {
         "beforeBuildCommand": "bun run build:e2e"
     },

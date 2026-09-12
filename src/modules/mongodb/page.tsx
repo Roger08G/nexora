@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { FiDatabase, FiPlus, FiRefreshCw } from "react-icons/fi";
 import { toast } from "@/shared/services/toast";
 import { useAppSettings } from "@/app/providers/AppSettingsProvider";
@@ -37,6 +37,7 @@ import type {
 import { ActionButton } from "@/shared/components/ui/ActionButton";
 import { StatusBadge } from "@/shared/components/ui/StatusBadge";
 import { getErrorMessage } from "@/shared/services/native";
+import { LatestOperation } from "@/shared/services/async-tasks";
 
 type EditorState = {
     document: Record<string, unknown> | null;
@@ -76,6 +77,13 @@ export function MongoDbPage() {
         open: false,
     });
     const [namespaceError, setNamespaceError] = useState<string | null>(null);
+    const queryOperation = useRef(new LatestOperation());
+    const indexOperation = useRef(new LatestOperation());
+    const activeConnection = useRef<{ id: string; mode: ConnectionMode } | null>(null);
+    const activeSelection = useRef<MongoSelection | null>(null);
+    const connecting = useRef(false);
+    const mutating = useRef(false);
+    const mounted = useRef(true);
 
     useEffect(() => {
         let cancelled = false;
@@ -93,14 +101,19 @@ export function MongoDbPage() {
 
     useEffect(
         () => () => {
-            if (!connectionId) return;
-            if (connectionMode === "managed") {
-                void stopManagedMongo();
+            mounted.current = false;
+            queryOperation.current.invalidate();
+            indexOperation.current.invalidate();
+            const connection = activeConnection.current;
+            activeConnection.current = null;
+            if (!connection) return;
+            if (connection.mode === "managed") {
+                void stopManagedMongo().catch(() => undefined);
             } else {
-                void disconnectMongo(connectionId);
+                void disconnectMongo(connection.id).catch(() => undefined);
             }
         },
-        [connectionId, connectionMode],
+        [],
     );
 
     useEffect(() => {
@@ -119,7 +132,7 @@ export function MongoDbPage() {
                   ...(database.collections ?? []).map((collection) => ({
                       action: () => {
                           const next = { database: database.name, collection };
-                          setSelection(next);
+                          selectCollection(next);
                           void query(connectionId, next);
                       },
                       description: database.name,
@@ -136,33 +149,45 @@ export function MongoDbPage() {
     }, [connectionId, databases, filter, limit, projection, registerItems]);
 
     async function connectExternal() {
+        if (connecting.current) return;
+        connecting.current = true;
         setIsLoading(true);
         setError(null);
         try {
             const connection = await connectMongo(uri);
+            if (!mounted.current) {
+                await disconnectMongo(connection.connectionId);
+                return;
+            }
             setConnectionMode("external");
             setConnectionLabel("Servidor externo");
-            await activateConnection(connection);
+            await activateConnection(connection, "external");
             toast.success("MongoDB conectado", { description: "Servidor externo" });
         } catch (cause) {
             const message = getErrorMessage(cause);
             setError(message);
             toast.error("No se pudo conectar a MongoDB", { description: message });
         } finally {
+            connecting.current = false;
             setIsLoading(false);
         }
     }
 
     async function startLocal() {
-        if (!project) return;
+        if (!project || connecting.current) return;
+        connecting.current = true;
         setIsLoading(true);
         setError(null);
         try {
             const connection = await startManagedMongo(project.root);
+            if (!mounted.current) {
+                await stopManagedMongo();
+                return;
+            }
             setManagedStatus(await getManagedMongoStatus());
             setConnectionMode("managed");
             setConnectionLabel(`Local · 127.0.0.1:${connection.port}`);
-            await activateConnection(connection);
+            await activateConnection(connection, "managed");
             toast.success("MongoDB local iniciado", {
                 description: `127.0.0.1:${connection.port} · ${connection.version}`,
             });
@@ -171,11 +196,13 @@ export function MongoDbPage() {
             setError(message);
             toast.error("No se pudo iniciar MongoDB local", { description: message });
         } finally {
+            connecting.current = false;
             setIsLoading(false);
         }
     }
 
-    async function activateConnection(connection: MongoConnection) {
+    async function activateConnection(connection: MongoConnection, mode: ConnectionMode) {
+        activeConnection.current = { id: connection.connectionId, mode };
         setConnectionId(connection.connectionId);
         setDatabases(connection.databases.map((name) => ({ name, collections: null })));
         const firstDatabase = connection.databases[0];
@@ -189,38 +216,47 @@ export function MongoDbPage() {
     ) {
         try {
             const collections = await loadMongoCollections(activeConnectionId, database);
+            if (activeConnection.current?.id !== activeConnectionId) return;
             setDatabases((current) =>
                 current.map((item) => (item.name === database ? { ...item, collections } : item)),
             );
             if (selectFirst && collections[0]) {
                 const next = { database, collection: collections[0] };
-                setSelection(next);
-                resetCollectionView();
+                selectCollection(next);
                 await query(activeConnectionId, next);
             }
         } catch (cause) {
+            if (activeConnection.current?.id !== activeConnectionId) return;
             setError(getErrorMessage(cause));
         }
     }
 
-    async function query(activeConnectionId = connectionId, activeSelection = selection) {
-        if (!activeConnectionId || !activeSelection) return;
+    async function query(activeConnectionId = connectionId, querySelection = selection) {
+        if (
+            !activeConnectionId ||
+            !querySelection ||
+            !isSelected(activeConnectionId, querySelection)
+        )
+            return;
+        const isCurrent = queryOperation.current.next();
         setIsLoading(true);
         setError(null);
         try {
             const result = await findMongoDocuments({
-                ...activeSelection,
+                ...querySelection,
                 connectionId: activeConnectionId,
                 filter,
                 limit: Number(limit) || 20,
                 projection,
             });
+            if (!isCurrent()) return;
             setDocuments(result.documents);
             toast.success("Consulta MongoDB completada", {
                 description: `${result.count} documentos`,
                 id: "mongodb-query",
             });
         } catch (cause) {
+            if (!isCurrent()) return;
             const message = getErrorMessage(cause);
             setDocuments([]);
             setError(message);
@@ -229,31 +265,66 @@ export function MongoDbPage() {
                 id: "mongodb-query",
             });
         } finally {
-            setIsLoading(false);
+            if (isCurrent()) setIsLoading(false);
         }
     }
 
     async function disconnect() {
-        if (connectionMode === "managed") {
-            await stopManagedMongo().catch(() => undefined);
-            setManagedStatus(await getManagedMongoStatus().catch(() => null));
-        } else if (connectionId) {
-            await disconnectMongo(connectionId).catch(() => undefined);
+        if (connecting.current) return;
+        connecting.current = true;
+        queryOperation.current.invalidate();
+        indexOperation.current.invalidate();
+        setIsLoading(true);
+        try {
+            if (connectionMode === "managed") {
+                await stopManagedMongo();
+                setManagedStatus(await getManagedMongoStatus().catch(() => null));
+            } else if (connectionId) {
+                await disconnectMongo(connectionId);
+            }
+            activeConnection.current = null;
+            activeSelection.current = null;
+            setConnectionId(null);
+            setConnectionMode(null);
+            setConnectionLabel("Servidor externo");
+            setDatabases([]);
+            setSelection(null);
+            setDocuments([]);
+            setIndexes([]);
+            setActiveView("documents");
+            setIndexError(null);
+            setError(null);
+            toast.success("MongoDB desconectado");
+        } catch (cause) {
+            const message = getErrorMessage(cause);
+            setError(message);
+            toast.error("No se pudo desconectar MongoDB", { description: message });
+        } finally {
+            connecting.current = false;
+            setIsLoading(false);
         }
-        setConnectionId(null);
-        setConnectionMode(null);
-        setConnectionLabel("Servidor externo");
-        setDatabases([]);
-        setSelection(null);
-        setDocuments([]);
-        setIndexes([]);
-        setActiveView("documents");
-        setIndexError(null);
-        setError(null);
-        toast.success("MongoDB desconectado");
+    }
+
+    function selectCollection(next: MongoSelection) {
+        activeSelection.current = next;
+        setSelection(next);
+        setEditor(null);
+        resetCollectionView();
+    }
+
+    function isSelected(id: string, namespace: MongoSelection) {
+        const current = activeSelection.current;
+        return (
+            activeConnection.current?.id === id &&
+            current?.database === namespace.database &&
+            current?.collection === namespace.collection
+        );
     }
 
     function resetCollectionView() {
+        queryOperation.current.invalidate();
+        indexOperation.current.invalidate();
+        setDocuments([]);
         setActiveView("documents");
         setIndexes([]);
         setIndexError(null);
@@ -263,27 +334,36 @@ export function MongoDbPage() {
     async function showIndexes() {
         setActiveView("indexes");
         if (!connectionId || !selection) return;
+        const isCurrent = indexOperation.current.next();
         setIndexesLoading(true);
         setIndexError(null);
         try {
-            setIndexes(
-                await loadMongoIndexes(connectionId, selection.database, selection.collection),
+            const nextIndexes = await loadMongoIndexes(
+                connectionId,
+                selection.database,
+                selection.collection,
             );
+            if (isCurrent()) setIndexes(nextIndexes);
         } catch (cause) {
+            if (!isCurrent()) return;
             const message = getErrorMessage(cause);
             setIndexError(message);
             toast.error("No se pudieron cargar los índices", { description: message });
         } finally {
-            setIndexesLoading(false);
+            if (isCurrent()) setIndexesLoading(false);
         }
     }
 
     async function saveDocument() {
-        if (!connectionId || !selection || !editor) return;
+        if (!connectionId || !selection || !editor || mutating.current) return;
+        mutating.current = true;
         setIsLoading(true);
         setEditorError(null);
         try {
             const parsed = JSON.parse(editor.value) as Record<string, unknown>;
+            if (!parsed || Array.isArray(parsed) || typeof parsed !== "object") {
+                throw new Error("El documento debe ser un objeto JSON.");
+            }
             if (editor.mode === "insert") {
                 await insertMongoDocument({
                     ...selection,
@@ -301,27 +381,31 @@ export function MongoDbPage() {
                     update: JSON.stringify({ $set: parsed }),
                 });
             }
+            if (!isSelected(connectionId, selection)) return;
             toast.success(
                 editor.mode === "insert" ? "Documento insertado" : "Documento actualizado",
             );
             setEditor(null);
             await query();
         } catch (cause) {
+            if (!isSelected(connectionId, selection)) return;
             const message = getErrorMessage(cause);
             setEditorError(message);
             toast.error("No se pudo guardar el documento", { description: message });
         } finally {
-            setIsLoading(false);
+            mutating.current = false;
+            if (isSelected(connectionId, selection)) setIsLoading(false);
         }
     }
 
     async function removeDocument(document: Record<string, unknown>) {
-        if (!connectionId || !selection || document._id === undefined) return;
+        if (!connectionId || !selection || document._id === undefined || mutating.current) return;
         if (
             settings.confirmDestructiveActions &&
             !window.confirm("¿Eliminar este documento? Esta acción no se puede deshacer.")
         )
             return;
+        mutating.current = true;
         setIsLoading(true);
         try {
             await deleteMongoDocument({
@@ -329,19 +413,23 @@ export function MongoDbPage() {
                 connectionId,
                 filter: JSON.stringify({ _id: document._id }),
             });
+            if (!isSelected(connectionId, selection)) return;
             toast.success("Documento eliminado");
             await query();
         } catch (cause) {
+            if (!isSelected(connectionId, selection)) return;
             const message = getErrorMessage(cause);
             setError(message);
             toast.error("No se pudo eliminar el documento", { description: message });
         } finally {
-            setIsLoading(false);
+            mutating.current = false;
+            if (isSelected(connectionId, selection)) setIsLoading(false);
         }
     }
 
     async function createCollection() {
-        if (!connectionId) return;
+        if (!connectionId || mutating.current) return;
+        mutating.current = true;
         const database = namespaceEditor.database.trim();
         const collection = namespaceEditor.collection.trim();
         setIsLoading(true);
@@ -350,6 +438,7 @@ export function MongoDbPage() {
             await createMongoCollection({ collection, connectionId, database });
             const databaseNames = await loadMongoDatabases(connectionId);
             const collections = await loadMongoCollections(connectionId, database);
+            if (activeConnection.current?.id !== connectionId) return;
             setDatabases(
                 databaseNames.map((name) => ({
                     name,
@@ -357,9 +446,7 @@ export function MongoDbPage() {
                 })),
             );
             const next = { collection, database };
-            setSelection(next);
-            setDocuments([]);
-            resetCollectionView();
+            selectCollection(next);
             setNamespaceEditor((current) => ({ ...current, open: false }));
             toast.success("Colección creada", { description: `${database}.${collection}` });
         } catch (cause) {
@@ -367,6 +454,7 @@ export function MongoDbPage() {
             setNamespaceError(message);
             toast.error("No se pudo crear la colección", { description: message });
         } finally {
+            mutating.current = false;
             setIsLoading(false);
         }
     }
@@ -399,8 +487,7 @@ export function MongoDbPage() {
                 onExpand={(database) => expandDatabase(connectionId, database)}
                 onSelect={(database, collection) => {
                     const next = { database, collection };
-                    setSelection(next);
-                    resetCollectionView();
+                    selectCollection(next);
                     void query(connectionId, next);
                 }}
                 selectedCollection={selection?.collection ?? ""}

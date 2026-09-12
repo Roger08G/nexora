@@ -24,6 +24,7 @@ import type {
     PostgresSelection,
 } from "@/modules/postgresql/types";
 import { getErrorMessage } from "@/shared/services/native";
+import { LatestOperation } from "@/shared/services/async-tasks";
 
 const INITIAL_SQL = "SELECT version();";
 
@@ -41,6 +42,10 @@ export function PostgreSqlPage() {
     const [isLoading, setIsLoading] = useState(false);
     const [isExporting, setIsExporting] = useState(false);
     const connectionRef = useRef<ManagedPostgresConnection | null>(null);
+    const queryOperation = useRef(new LatestOperation());
+    const queryPending = useRef(false);
+    const serverPending = useRef(false);
+    const mounted = useRef(true);
 
     useEffect(() => {
         connectionRef.current = connection;
@@ -70,7 +75,9 @@ export function PostgreSqlPage() {
 
     useEffect(
         () => () => {
-            if (connectionRef.current) void stopManagedPostgres();
+            mounted.current = false;
+            queryOperation.current.invalidate();
+            if (connectionRef.current) void stopManagedPostgres().catch(() => undefined);
         },
         [],
     );
@@ -92,7 +99,8 @@ export function PostgreSqlPage() {
     }, [database, registerItems]);
 
     async function startServer() {
-        if (!project) return;
+        if (!project || serverPending.current) return;
+        serverPending.current = true;
         setIsLoading(true);
         setError(null);
         toast.loading("Iniciando PostgreSQL local", {
@@ -101,6 +109,10 @@ export function PostgreSqlPage() {
         });
         try {
             const nextConnection = await startManagedPostgres(project.root);
+            if (!mounted.current) {
+                await stopManagedPostgres();
+                return;
+            }
             connectionRef.current = nextConnection;
             setConnection(nextConnection);
             const inspected = await inspectPostgres(nextConnection.connectionId);
@@ -118,11 +130,15 @@ export function PostgreSqlPage() {
                 id: "postgresql-runtime",
             });
         } finally {
+            serverPending.current = false;
             setIsLoading(false);
         }
     }
 
     async function stopServer() {
+        if (serverPending.current) return;
+        serverPending.current = true;
+        queryOperation.current.invalidate();
         setIsLoading(true);
         try {
             await stopManagedPostgres();
@@ -138,6 +154,7 @@ export function PostgreSqlPage() {
             setError(message);
             toast.error("No se pudo detener PostgreSQL", { description: message });
         } finally {
+            serverPending.current = false;
             setIsLoading(false);
         }
     }
@@ -148,6 +165,7 @@ export function PostgreSqlPage() {
         setError(null);
         try {
             const inspected = await inspectPostgres(connection.connectionId);
+            if (connectionRef.current?.connectionId !== connection.connectionId) return;
             setDatabase(inspected);
             if (showToast) {
                 const tableCount = inspected.schemas.reduce(
@@ -159,6 +177,7 @@ export function PostgreSqlPage() {
                 });
             }
         } catch (cause) {
+            if (connectionRef.current?.connectionId !== connection.connectionId) return;
             const message = getErrorMessage(cause);
             setError(message);
             toast.error("No se pudo actualizar PostgreSQL", { description: message });
@@ -168,11 +187,14 @@ export function PostgreSqlPage() {
     }
 
     async function execute(allowWrite = false) {
-        if (!connection) return;
+        if (!connection || queryPending.current || serverPending.current) return;
+        queryPending.current = true;
+        const isCurrent = queryOperation.current.next();
         setIsLoading(true);
         setError(null);
         try {
             const nextResult = await runPostgresQuery(connection.connectionId, sql, allowWrite);
+            if (!isCurrent()) return;
             setResult(nextResult);
             toast.success(
                 nextResult.readonly ? "Consulta PostgreSQL completada" : "PostgreSQL actualizado",
@@ -185,6 +207,7 @@ export function PostgreSqlPage() {
             );
             if (!nextResult.readonly) await refreshSchema(false);
         } catch (cause) {
+            if (!isCurrent()) return;
             const message = getErrorMessage(cause);
             if (
                 !allowWrite &&
@@ -194,6 +217,7 @@ export function PostgreSqlPage() {
                         "La sentencia modificará PostgreSQL. ¿Quieres ejecutarla en el servidor local?",
                     ))
             ) {
+                queryPending.current = false;
                 setIsLoading(false);
                 await execute(true);
                 return;
@@ -201,7 +225,8 @@ export function PostgreSqlPage() {
             setError(message);
             toast.error("Error en PostgreSQL", { description: message, id: "postgresql-query" });
         } finally {
-            setIsLoading(false);
+            queryPending.current = false;
+            if (!serverPending.current) setIsLoading(false);
         }
     }
 
@@ -230,6 +255,7 @@ export function PostgreSqlPage() {
     }
 
     function selectTable(nextSelection: PostgresSelection) {
+        queryOperation.current.invalidate();
         setSelection(nextSelection);
         setSql(selectTableSql(nextSelection));
         setResult(null);
@@ -268,7 +294,9 @@ export function PostgreSqlPage() {
                 onExecute={() => execute()}
                 onExport={() => void exportCsv()}
                 onSqlChange={(value) => {
+                    queryOperation.current.invalidate();
                     setSql(value);
+                    setResult(null);
                     setError(null);
                 }}
                 result={result}

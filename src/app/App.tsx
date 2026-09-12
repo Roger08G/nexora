@@ -24,7 +24,7 @@ function AppContent() {
     return (
         <>
             {project ? (
-                <SessionVariablesProvider key={project.id}>
+                <SessionVariablesProvider key={`${project.root}\u0000${project.id}`}>
                     <HistoryProvider>
                         <AppShell />
                     </HistoryProvider>

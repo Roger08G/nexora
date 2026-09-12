@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
+import { toast } from "@/shared/services/toast";
 
 const STORAGE_KEY = "nexora.settings.v1";
 
@@ -29,7 +30,14 @@ export function AppSettingsProvider({ children }: { children: ReactNode }) {
     const [settings, setSettings] = useState<AppSettings>(loadSettings);
 
     useEffect(() => {
-        window.localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
+        try {
+            window.localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
+        } catch {
+            toast.error("No se pudieron guardar los ajustes", {
+                description: "Los ajustes se conservarán durante esta sesión.",
+                id: "settings-storage",
+            });
+        }
     }, [settings]);
 
     const value = useMemo<AppSettingsContextValue>(
@@ -67,8 +75,14 @@ function loadSettings() {
 function sanitizeSettings(settings: AppSettings): AppSettings {
     return {
         autoSaveDelayMs: clampNumber(settings.autoSaveDelayMs, 300, 5_000),
-        autoSaveRequests: Boolean(settings.autoSaveRequests),
-        confirmDestructiveActions: Boolean(settings.confirmDestructiveActions),
+        autoSaveRequests:
+            typeof settings.autoSaveRequests === "boolean"
+                ? settings.autoSaveRequests
+                : DEFAULT_APP_SETTINGS.autoSaveRequests,
+        confirmDestructiveActions:
+            typeof settings.confirmDestructiveActions === "boolean"
+                ? settings.confirmDestructiveActions
+                : DEFAULT_APP_SETTINGS.confirmDestructiveActions,
         requestTimeoutMs: clampNumber(settings.requestTimeoutMs, 1_000, 120_000),
     };
 }

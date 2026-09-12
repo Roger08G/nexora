@@ -1,4 +1,12 @@
-import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
+import {
+    createContext,
+    useCallback,
+    useContext,
+    useEffect,
+    useMemo,
+    useRef,
+    useState,
+} from "react";
 import type { ReactNode } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { toast } from "@/shared/services/toast";
@@ -32,6 +40,7 @@ type ProjectContextValue = {
     openProject: () => Promise<void>;
     project: NexoraProject | null;
     projectLoad: ProjectLoadState | null;
+    registerBeforeProjectChange: (handler: () => Promise<boolean>) => () => void;
 };
 
 const ProjectContext = createContext<ProjectContextValue | null>(null);
@@ -46,6 +55,14 @@ export function ProjectProvider({ children }: ProjectProviderProps) {
     const [error, setError] = useState<string | null>(null);
     const [projectLoad, setProjectLoad] = useState<ProjectLoadState | null>(null);
     const e2eBootstrapStarted = useRef(false);
+    const selecting = useRef(false);
+    const beforeProjectChange = useRef(new Set<() => Promise<boolean>>());
+    const registerBeforeProjectChange = useCallback((handler: () => Promise<boolean>) => {
+        beforeProjectChange.current.add(handler);
+        return () => {
+            beforeProjectChange.current.delete(handler);
+        };
+    }, []);
 
     useEffect(() => {
         if (import.meta.env.MODE !== "e2e" || e2eBootstrapStarted.current) return;
@@ -72,20 +89,36 @@ export function ProjectProvider({ children }: ProjectProviderProps) {
     }
 
     async function openProject() {
-        const root = await selectDirectory("Abrir proyecto Nexora");
-        if (!root) return;
-        await perform("open", projectNameFromRoot(root), () =>
-            runCommand<NexoraProject>("open_project", { root }),
-        );
+        await selectProject("open");
     }
 
     async function createProject() {
-        const root = await selectDirectory("Crear proyecto Nexora en esta carpeta");
-        if (!root) return;
-        const name = projectNameFromRoot(root);
-        await perform("create", name, () =>
-            runCommand<NexoraProject>("create_project", { name, root }),
-        );
+        await selectProject("create");
+    }
+
+    async function selectProject(kind: ProjectLoadState["kind"]) {
+        if (selecting.current) return;
+        selecting.current = true;
+        setBusy(true);
+        try {
+            const root = await selectDirectory(
+                kind === "open" ? "Abrir proyecto Nexora" : "Crear proyecto Nexora en esta carpeta",
+            );
+            if (!root) return;
+            const name = projectNameFromRoot(root);
+            await perform(kind, name, () =>
+                kind === "open"
+                    ? runCommand<NexoraProject>("open_project", { root })
+                    : runCommand<NexoraProject>("create_project", { name, root }),
+            );
+        } catch (cause) {
+            const message = getErrorMessage(cause);
+            setError(message);
+            toast.error("No se pudo seleccionar el proyecto", { description: message });
+        } finally {
+            selecting.current = false;
+            setBusy(false);
+        }
     }
 
     async function perform(
@@ -105,6 +138,11 @@ export function ProjectProvider({ children }: ProjectProviderProps) {
             ready: false,
         });
         try {
+            for (const prepare of beforeProjectChange.current) {
+                if (!(await prepare())) {
+                    throw new Error("No se pudieron guardar las peticiones del proyecto actual.");
+                }
+            }
             const nextProject = await action();
             setProject(nextProject);
             setProjectLoad({
@@ -143,8 +181,9 @@ export function ProjectProvider({ children }: ProjectProviderProps) {
             openProject,
             project,
             projectLoad,
+            registerBeforeProjectChange,
         }),
-        [busy, error, project, projectLoad],
+        [busy, error, project, projectLoad, registerBeforeProjectChange],
     );
 
     return <ProjectContext.Provider value={value}>{children}</ProjectContext.Provider>;

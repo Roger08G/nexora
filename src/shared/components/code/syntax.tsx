@@ -123,8 +123,11 @@ function templateNodes(value: string, key: number): ReactNode[] {
 }
 
 function jsonTokenKind(line: string, token: string, end: number): TokenKind {
-    if (token.startsWith('"'))
-        return line.slice(end).trimStart().startsWith(":") ? "key" : "string";
+    if (token.startsWith('"')) {
+        // Inspect adjacent whitespace without allocating a suffix for every JSON string.
+        while (end < line.length && /\s/.test(line[end])) end++;
+        return line[end] === ":" ? "key" : "string";
+    }
     if (token === "true" || token === "false") return "boolean";
     if (token === "null") return "null";
     if (/^-?\d/.test(token)) return "number";

@@ -1,3 +1,4 @@
+import { memo } from "react";
 import { highlightLine, type CodeLanguage } from "@/shared/components/code/syntax";
 
 type CodeViewerProps = {
@@ -7,7 +8,7 @@ type CodeViewerProps = {
     value: string;
 };
 
-export function CodeViewer({
+export const CodeViewer = memo(function CodeViewer({
     ariaLabel = "Código",
     className = "",
     language,
@@ -32,7 +33,7 @@ export function CodeViewer({
             ))}
         </div>
     );
-}
+});
 
 function normalizedLines(value: string) {
     return value.replace(/\r\n?/g, "\n").split("\n");

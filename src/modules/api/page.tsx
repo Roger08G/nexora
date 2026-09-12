@@ -27,26 +27,42 @@ import type {
     SavedRequest,
 } from "@/modules/api/types";
 import { getErrorMessage } from "@/shared/services/native";
+import { KeyedTaskQueue, LatestOperation } from "@/shared/services/async-tasks";
 
 export function ApiPage() {
     const { settings } = useAppSettings();
     const { registerItems } = useGlobalSearch();
-    const { project } = useProject();
+    const { project, registerBeforeProjectChange } = useProject();
     const { values: sessionVariables } = useSessionVariables();
     const { record: recordHistory } = useHistory();
     const [folderSummaries, setFolderSummaries] = useState<RequestFolderSummary[]>(() => [
         DEFAULT_FOLDER,
     ]);
     const [requests, setRequests] = useState<SavedRequest[]>(() => [newRequest(DEFAULT_FOLDER)]);
-    const [openRequestIds, setOpenRequestIds] = useState<string[]>(() => [requests[0].id]);
-    const [activeRequestId, setActiveRequestId] = useState(requests[0].id);
+    const [openRequestIds, setOpenRequestIdsState] = useState<string[]>(() => [requests[0].id]);
+    const [activeRequestId, setActiveRequestIdState] = useState(requests[0].id);
     const [responseState, setResponseState] = useState<ResponseState>({ status: "idle" });
     const [saveStates, setSaveStates] = useState<Record<string, RequestSaveState>>({});
     const [requestsLoaded, setRequestsLoaded] = useState(false);
+    const [runningRequestIds, setRunningRequestIds] = useState<string[]>([]);
     const requestsRef = useRef(requests);
+    const openRequestIdsRef = useRef(openRequestIds);
+    const activeRequestIdRef = useRef(activeRequestId);
     const savedSnapshots = useRef(new Map<string, string>());
-    const saveQueue = useRef(new Map<string, Promise<boolean>>());
+    const saveQueue = useRef(new KeyedTaskQueue());
+    const deletingIds = useRef(new Set<string>());
+    const runningIds = useRef(new Set<string>());
+    const responseOperation = useRef(new LatestOperation());
+    const navigationOperation = useRef(new LatestOperation());
     const pageRef = useRef<HTMLElement>(null);
+
+    useEffect(
+        () => () => {
+            responseOperation.current.invalidate();
+            navigationOperation.current.invalidate();
+        },
+        [],
+    );
 
     useEffect(() => {
         requestsRef.current = requests;
@@ -72,7 +88,7 @@ export function ApiPage() {
                 );
                 setOpenRequestIds([next[0].id]);
                 setActiveRequestId(next[0].id);
-                setResponseState({ status: "idle" });
+                resetResponse();
                 setRequestsLoaded(true);
             })
             .catch((error) => {
@@ -115,7 +131,10 @@ export function ApiPage() {
 
     useEffect(() => {
         if (!project || !requestsLoaded || !settings.autoSaveRequests || !activeRequest) return;
-        if (savedSnapshots.current.get(activeRequest.id) === requestSnapshot(activeRequest)) {
+        if (
+            !saveQueue.current.has(activeRequest.id) &&
+            savedSnapshots.current.get(activeRequest.id) === requestSnapshot(activeRequest)
+        ) {
             setRequestSaveState(activeRequest.id, "saved");
             return;
         }
@@ -132,11 +151,25 @@ export function ApiPage() {
     ]);
 
     useEffect(
+        () =>
+            registerBeforeProjectChange(async () => {
+                if (!project || !requestsLoaded || !settings.autoSaveRequests) return true;
+                const results = await Promise.all(
+                    requestsRef.current
+                        .filter((request) => !deletingIds.current.has(request.id))
+                        .map((request) => saveRequest(request, "switch")),
+                );
+                return results.every(Boolean);
+            }),
+        [project, registerBeforeProjectChange, requestsLoaded, settings.autoSaveRequests],
+    );
+
+    useEffect(
         () => () => {
             if (!project || !requestsLoaded || !settings.autoSaveRequests) return;
             for (const request of requestsRef.current) {
                 if (savedSnapshots.current.get(request.id) !== requestSnapshot(request)) {
-                    void persistRequest(project.root, request);
+                    void saveRequest(request, "switch");
                 }
             }
         },
@@ -144,7 +177,9 @@ export function ApiPage() {
     );
 
     async function create(folder?: RequestFolderSummary) {
+        const isCurrent = navigationOperation.current.next();
         await flushActiveRequest();
+        if (!isCurrent()) return;
         const targetFolder =
             folder ??
             folders.find((candidate) => candidate.id === activeRequest.collectionId) ??
@@ -154,7 +189,7 @@ export function ApiPage() {
         setRequestsAndRef((current) => [...current, request]);
         setOpenRequestIds((current) => [...current, request.id]);
         setActiveRequestId(request.id);
-        setResponseState({ status: "idle" });
+        resetResponse();
         toast.info("Nueva ruta creada", { description: targetFolder.name });
     }
 
@@ -172,7 +207,9 @@ export function ApiPage() {
     async function renameRequest(request: SavedRequest, name: string) {
         const normalizedName = name.trim();
         if (!normalizedName || normalizedName === request.name) return;
-        const renamed = { ...request, name: normalizedName };
+        const latest = requestsRef.current.find((candidate) => candidate.id === request.id);
+        if (!latest || deletingIds.current.has(request.id)) return;
+        const renamed = { ...latest, name: normalizedName };
         setRequestsAndRef((current) =>
             current.map((candidate) => (candidate.id === request.id ? renamed : candidate)),
         );
@@ -181,15 +218,15 @@ export function ApiPage() {
     }
 
     async function deleteRequest(request: SavedRequest) {
-        if (!project) return;
-        const queued = saveQueue.current.get(request.id);
-        if (queued) await queued;
+        if (!project || deletingIds.current.has(request.id)) return;
+        deletingIds.current.add(request.id);
         try {
-            if (savedSnapshots.current.has(request.id)) {
-                await deleteSavedRequest(project.root, request.collectionId, request.id);
-            }
+            await saveQueue.current.enqueue(request.id, async () => {
+                if (savedSnapshots.current.has(request.id)) {
+                    await deleteSavedRequest(project.root, request.collectionId, request.id);
+                }
+            });
             savedSnapshots.current.delete(request.id);
-            saveQueue.current.delete(request.id);
             const remaining = requestsRef.current.filter(
                 (candidate) => candidate.id !== request.id,
             );
@@ -206,15 +243,16 @@ export function ApiPage() {
                 return next;
             });
 
-            const nextOpenIds = openRequestIds.filter((id) => id !== request.id);
+            const nextOpenIds = openRequestIdsRef.current.filter((id) => id !== request.id);
             const normalizedOpenIds = nextOpenIds.length ? nextOpenIds : [nextRequests[0].id];
             setOpenRequestIds(normalizedOpenIds);
-            if (activeRequestId === request.id) {
+            if (activeRequestIdRef.current === request.id) {
                 setActiveRequestId(normalizedOpenIds[0]);
-                setResponseState({ status: "idle" });
+                resetResponse();
             }
             toast.success("Petición eliminada", { description: request.name });
         } catch (error) {
+            deletingIds.current.delete(request.id);
             toast.error("No se pudo eliminar la petición", {
                 description: getErrorMessage(error),
             });
@@ -222,27 +260,33 @@ export function ApiPage() {
     }
 
     async function activateRequest(requestId: string) {
-        if (requestId === activeRequestId) return;
+        if (requestId === activeRequestIdRef.current) return;
+        const isCurrent = navigationOperation.current.next();
         await flushActiveRequest();
+        if (!isCurrent()) return;
         const request = requestsRef.current.find((candidate) => candidate.id === requestId);
         if (!request) return;
         setOpenRequestIds((current) =>
             current.includes(request.id) ? current : [...current, request.id],
         );
         setActiveRequestId(request.id);
-        setResponseState({ status: "idle" });
+        resetResponse();
     }
 
     async function closeRequest(requestId: string) {
-        if (openRequestIds.length === 1) return;
+        if (openRequestIdsRef.current.length === 1) return;
+        const isCurrent = navigationOperation.current.next();
         const closing = requestsRef.current.find((request) => request.id === requestId);
         if (closing && settings.autoSaveRequests) await saveRequest(closing, "switch");
-        const closingIndex = openRequestIds.indexOf(requestId);
-        const nextIds = openRequestIds.filter((id) => id !== requestId);
+        if (!isCurrent()) return;
+        const currentIds = openRequestIdsRef.current;
+        if (currentIds.length === 1 || !currentIds.includes(requestId)) return;
+        const closingIndex = currentIds.indexOf(requestId);
+        const nextIds = currentIds.filter((id) => id !== requestId);
         setOpenRequestIds(nextIds);
-        if (requestId === activeRequestId) {
+        if (requestId === activeRequestIdRef.current) {
             setActiveRequestId(nextIds[Math.max(0, closingIndex - 1)] ?? nextIds[0]);
-            setResponseState({ status: "idle" });
+            resetResponse();
         }
     }
 
@@ -278,10 +322,19 @@ export function ApiPage() {
             ),
         );
         setRequestSaveState(activeRequest.id, "idle");
-        if (invalidateResponse) setResponseState({ status: "idle" });
+        if (invalidateResponse) resetResponse();
+    }
+
+    function resetResponse() {
+        responseOperation.current.invalidate();
+        setResponseState({ status: "idle" });
     }
 
     async function send() {
+        if (runningIds.current.has(activeRequest.id)) return;
+        runningIds.current.add(activeRequest.id);
+        setRunningRequestIds((current) => [...current, activeRequest.id]);
+        const isCurrent = responseOperation.current.next();
         setResponseState({ status: "loading" });
         try {
             const response = await executeRequest(
@@ -289,20 +342,25 @@ export function ApiPage() {
                 sessionVariables,
                 settings.requestTimeoutMs,
             );
-            setResponseState({ status: "success", response });
             void recordHistory({ request: activeRequest, response, source: "api" });
+            if (!isCurrent()) return;
+            setResponseState({ status: "success", response });
             toast.success(`${activeRequest.name}: ${response.status}`, {
                 description: `${Math.round(response.durationMs)} ms · ${formatBytes(response.sizeBytes)}`,
                 id: `request-send-${activeRequest.id}`,
             });
         } catch (error) {
             const message = getErrorMessage(error);
-            setResponseState({ status: "error", message });
             void recordHistory({ error: message, request: activeRequest, source: "api" });
+            if (!isCurrent()) return;
+            setResponseState({ status: "error", message });
             toast.error(`Error al ejecutar ${activeRequest.name}`, {
                 description: message,
                 id: `request-send-${activeRequest.id}`,
             });
+        } finally {
+            runningIds.current.delete(activeRequest.id);
+            setRunningRequestIds((current) => current.filter((id) => id !== activeRequest.id));
         }
     }
 
@@ -321,25 +379,22 @@ export function ApiPage() {
         request: SavedRequest,
         reason: "auto" | "manual" | "rename" | "switch",
     ) {
-        if (!project) return false;
+        if (!project || deletingIds.current.has(request.id)) return false;
         const signature = requestSnapshot(request);
-        if (savedSnapshots.current.get(request.id) === signature) {
-            setRequestSaveState(request.id, "saved");
-            if (reason === "manual") {
-                toast.info("La petición ya está guardada", {
-                    description: request.name,
-                    id: `request-save-${request.id}`,
-                });
+        return saveQueue.current.enqueue(request.id, async () => {
+            if (deletingIds.current.has(request.id)) return false;
+            if (savedSnapshots.current.get(request.id) === signature) {
+                setRequestSaveState(request.id, "saved");
+                if (reason === "manual") {
+                    toast.info("La petición ya está guardada", {
+                        description: request.name,
+                        id: `request-save-${request.id}`,
+                    });
+                }
+                return true;
             }
-            return true;
-        }
 
-        const queued = saveQueue.current.get(request.id);
-        if (queued) await queued;
-        if (savedSnapshots.current.get(request.id) === signature) return true;
-
-        setRequestSaveState(request.id, "saving");
-        const operation = (async () => {
+            setRequestSaveState(request.id, "saving");
             try {
                 const saved = await persistRequest(project.root, request);
                 const savedSignature = requestSnapshot(saved);
@@ -351,7 +406,11 @@ export function ApiPage() {
                             : candidate,
                     ),
                 );
-                setRequestSaveState(request.id, "saved");
+                const latest = requestsRef.current.find((candidate) => candidate.id === saved.id);
+                setRequestSaveState(
+                    request.id,
+                    latest && requestSnapshot(latest) !== savedSignature ? "idle" : "saved",
+                );
                 toast.success(
                     reason === "manual"
                         ? "Petición guardada"
@@ -373,19 +432,24 @@ export function ApiPage() {
                 });
                 return false;
             }
-        })();
-        saveQueue.current.set(request.id, operation);
-        const result = await operation;
-        if (saveQueue.current.get(request.id) === operation) saveQueue.current.delete(request.id);
-        return result;
+        });
     }
 
     function setRequestsAndRef(update: (current: SavedRequest[]) => SavedRequest[]) {
-        setRequests((current) => {
-            const next = update(current);
-            requestsRef.current = next;
-            return next;
-        });
+        const next = update(requestsRef.current);
+        requestsRef.current = next;
+        setRequests(next);
+    }
+
+    function setOpenRequestIds(update: string[] | ((current: string[]) => string[])) {
+        const next = typeof update === "function" ? update(openRequestIdsRef.current) : update;
+        openRequestIdsRef.current = next;
+        setOpenRequestIdsState(next);
+    }
+
+    function setActiveRequestId(id: string) {
+        activeRequestIdRef.current = id;
+        setActiveRequestIdState(id);
     }
 
     function setRequestSaveState(requestId: string, state: RequestSaveState) {
@@ -419,7 +483,7 @@ export function ApiPage() {
                         autoSave={settings.autoSaveRequests}
                         canSave={Boolean(project)}
                         draft={activeDraft}
-                        isSending={responseState.status === "loading"}
+                        isSending={runningRequestIds.includes(activeRequest.id)}
                         onChange={(draft) => updateActive(draft)}
                         onSave={() => void save()}
                         onSend={() => void send()}

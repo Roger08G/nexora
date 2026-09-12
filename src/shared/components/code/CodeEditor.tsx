@@ -1,4 +1,4 @@
-import { useRef, type KeyboardEvent, type UIEvent } from "react";
+import { memo, useMemo, useRef, type KeyboardEvent, type UIEvent } from "react";
 import { highlightLine, type CodeLanguage } from "@/shared/components/code/syntax";
 
 type CodeEditorProps = {
@@ -24,7 +24,7 @@ export function CodeEditor({
 }: CodeEditorProps) {
     const codeRef = useRef<HTMLElement>(null);
     const gutterRef = useRef<HTMLDivElement>(null);
-    const lines = value.replace(/\r\n?/g, "\n").split("\n");
+    const lines = useMemo(() => value.replace(/\r\n?/g, "\n").split("\n"), [value]);
 
     function syncScroll(event: UIEvent<HTMLTextAreaElement>) {
         const { scrollLeft, scrollTop } = event.currentTarget;
@@ -62,7 +62,7 @@ export function CodeEditor({
                 <pre aria-hidden="true">
                     <code ref={codeRef}>
                         {lines.map((line, index) => (
-                            <span key={index}>{highlightLine(line, language)}</span>
+                            <HighlightedEditorLine key={index} line={line} language={language} />
                         ))}
                     </code>
                 </pre>
@@ -80,3 +80,13 @@ export function CodeEditor({
         </div>
     );
 }
+
+const HighlightedEditorLine = memo(function HighlightedEditorLine({
+    line,
+    language,
+}: {
+    line: string;
+    language: CodeLanguage;
+}) {
+    return <span>{highlightLine(line, language)}</span>;
+});

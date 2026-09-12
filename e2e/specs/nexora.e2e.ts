@@ -1,7 +1,7 @@
-import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { $, $$, browser, expect } from "@wdio/globals";
-import { E2E_API_URL, readSavedRequest } from "../support/fixture";
+import { createProjectFixture, E2E_API_URL, readSavedRequest } from "../support/fixture";
 
 const projectRoot = requiredEnvironment("NEXORA_E2E_PROJECT_ROOT");
 
@@ -194,6 +194,46 @@ describe("Nexora en el WebView real de Tauri", () => {
         await browser.keys("Escape");
     });
 
+    it("mantiene la respuesta de la pestaña actual cuando termina una petición anterior", async () => {
+        const key = `selection-${Date.now()}`;
+        await openWorkspace("API Client");
+        await openRequest("Health check");
+        await $('[aria-label="URL de la petición"]').setValue(`${E2E_API_URL}/delay?key=${key}`);
+        try {
+            await clickButton("Enviar");
+            await browser.waitUntil(async () => {
+                const response = await fetch(`${E2E_API_URL}/delay-state?key=${key}`);
+                return ((await response.json()) as { pending: boolean }).pending;
+            });
+            await openRequest("Echo POST");
+            await sendAndExpect(201);
+            await fetch(`${E2E_API_URL}/release-delay?key=${key}`, { method: "POST" });
+            // The history entry confirms the old native HTTP execution has completed.
+            await browser.waitUntil(async () => {
+                const history = await $$(".history-item strong").map((entry) => entry.getText());
+                return history.includes("Health check");
+            });
+            await expect($('.request-tab[data-active="true"]')).toHaveText(
+                expect.stringContaining("Echo POST"),
+            );
+            await expect($(".response-result__meta strong")).toHaveText(
+                expect.stringContaining("201"),
+            );
+            await expect($(".response-result__code")).toHaveText(
+                expect.stringContaining('"method": "POST"'),
+            );
+            expect(await $(".response-result__code").getText()).not.toContain("late-response");
+        } finally {
+            await fetch(`${E2E_API_URL}/release-delay?key=${key}`, { method: "POST" });
+            await openRequest("Health check");
+            await $('[aria-label="URL de la petición"]').setValue("{{baseUrl}}/health");
+            await browser.waitUntil(
+                () =>
+                    readSavedRequest(projectRoot, "general", "health").url === "{{baseUrl}}/health",
+            );
+        }
+    });
+
     it("cierra pestañas con Ctrl+W sin cerrar la última", async () => {
         const initialCount = await $$(".request-tab").length;
         expect(initialCount).toBeGreaterThan(1);
@@ -246,6 +286,54 @@ describe("Nexora en el WebView real de Tauri", () => {
             async () => !(await requestTreeItem("Ruta WebView renombrada").isExisting()),
         );
         expect(findSavedRequestByName("Ruta WebView renombrada", false)).toBeNull();
+    });
+
+    it("conserva una reversión durante autosave y no resucita una petición eliminada", async () => {
+        await openWorkspace("API Client");
+        await $(".request-tabs__new").click();
+        const originalUrl = `${E2E_API_URL}/health?revision=original`;
+        await $('[aria-label="URL de la petición"]').setValue(originalUrl);
+        await browser.waitUntil(
+            () => findSavedRequestByName("Nueva petición", false)?.url === originalUrl,
+        );
+        const requestId = findSavedRequestByName("Nueva petición")?.id;
+        if (!requestId) throw new Error("La petición de regresión no tiene id");
+
+        await installIpcGate(requestId);
+        try {
+            await $('[aria-label="URL de la petición"]').setValue(
+                `${E2E_API_URL}/health?revision=pending`,
+            );
+            await waitForHeldSave();
+            await $('[aria-label="URL de la petición"]').setValue(originalUrl);
+            // Cross the configured 800 ms debounce while the earlier write is held.
+            await browser.pause(1_200);
+            await releaseHeldSave();
+            await browser.waitUntil(async () => (await ipcGateState()).completedSaves >= 2);
+            expect(findSavedRequestByName("Nueva petición")?.url).toBe(originalUrl);
+        } finally {
+            await restoreIpcGate();
+        }
+
+        await installIpcGate(requestId);
+        try {
+            await $('[aria-label="URL de la petición"]').setValue(
+                `${E2E_API_URL}/health?revision=delete-pending`,
+            );
+            await waitForHeldSave();
+            await openRequestContextAction("Nueva petición", "Eliminar petición");
+            await clickButton("Eliminar");
+            await releaseHeldSave();
+            await browser.waitUntil(
+                async () => !(await requestTreeItem("Nueva petición").isExisting()),
+            );
+            await browser.waitUntil(async () => (await ipcGateState()).completedSaves >= 1);
+            await browser.pause(1_200);
+            expect(findSavedRequestByName("Nueva petición", false)).toBeNull();
+            expect(await $$(".request-tab").length).toBeGreaterThanOrEqual(1);
+        } finally {
+            await restoreIpcGate();
+        }
     });
 
     it("abre Ctrl+K, aplica ajustes persistentes y muestra toasts temáticos", async () => {
@@ -406,6 +494,59 @@ describe("Nexora en el WebView real de Tauri", () => {
         await clickButton("Detener PostgreSQL local");
         await button("Iniciar servidor local").waitForDisplayed({ timeout: 60_000 });
     });
+
+    it("guarda antes de abrir un clon y aísla sus variables aunque comparta el id del proyecto", async () => {
+        const cloneRoot = join(projectRoot, "cloned-project");
+        createProjectFixture(cloneRoot, "Nexora WebView Clone");
+        const readProjectId = (root: string) =>
+            (
+                JSON.parse(readFileSync(join(root, ".nexora", "project.json"), "utf8")) as {
+                    id: string;
+                }
+            ).id;
+        expect(readProjectId(cloneRoot)).toBe(readProjectId(projectRoot));
+
+        await openWorkspace("Variables de sesión");
+        await addSessionVariable("privateSession", "fixture-secret-not-persisted");
+        await openWorkspace("API Client");
+        await openRequest("Health check");
+        const pendingUrl = `${E2E_API_URL}/health?project-flush=1`;
+        await installIpcGate("health", cloneRoot);
+        try {
+            await $('[aria-label="URL de la petición"]').setValue(pendingUrl);
+            await waitForHeldSave();
+            await openProjectFromFooter();
+            await $(".loading-screen").waitForDisplayed();
+            expect((await ipcGateState()).openProjectCalls).toBe(0);
+            await releaseHeldSave();
+            await $(".loading-screen").waitForExist({ reverse: true, timeout: 30_000 });
+            await expect($(".status-bar")).toHaveText(
+                expect.stringContaining("Nexora WebView Clone"),
+            );
+            expect(readSavedRequest(projectRoot, "general", "health").url).toBe(pendingUrl);
+            await openWorkspace("Variables de sesión");
+            expect(await $$('[aria-label="Nombre de variable"]').length).toBe(0);
+            expect(readSavedRequest(cloneRoot, "general", "health").url).toBe("{{baseUrl}}/health");
+        } finally {
+            await restoreIpcGate();
+            await installIpcGate(null, projectRoot);
+            try {
+                await openProjectFromFooter();
+                await $(".loading-screen").waitForExist({ reverse: true, timeout: 30_000 });
+                await expect($(".status-bar")).toHaveText(
+                    expect.stringContaining("Nexora WebView E2E"),
+                );
+            } finally {
+                await restoreIpcGate();
+            }
+        }
+        await openWorkspace("API Client");
+        await openRequest("Health check");
+        await sendAndExpect(200);
+        const artifacts = resolve("artifacts", "e2e");
+        mkdirSync(artifacts, { recursive: true });
+        await browser.saveScreenshot(join(artifacts, "nexora-2.0-shell.png"));
+    });
 });
 
 async function addSessionVariable(key: string, value: string) {
@@ -433,7 +574,13 @@ async function openRequest(name: string) {
         if ((await trigger.getAttribute("aria-expanded")) !== "true") await trigger.click();
     }
     await (await button(name)).click();
-    await expect($('.request-tab[data-active="true"]')).toHaveText(expect.stringContaining(name));
+    await browser.waitUntil(
+        async () => (await $('.request-tab[data-active="true"]').getText()).includes(name),
+        {
+            timeout: 20_000,
+            timeoutMsg: `No se activó la petición ${name}`,
+        },
+    );
 }
 
 async function sendAndExpect(status: number) {
@@ -531,6 +678,7 @@ function findSavedRequestByName(name: string, required = true) {
             const value = JSON.parse(
                 readFileSync(join(requestRoot, folder.name, file), "utf8"),
             ) as {
+                id?: string;
                 name?: string;
                 url?: string;
             };
@@ -567,6 +715,118 @@ async function stopLocalRuntime(workspace: string, selector: string) {
     } catch {
         // La limpieza del siguiente runtime todavía debe intentarse.
     }
+}
+
+type IpcGateWindow = Window & {
+    __NEXORA_E2E_IPC_GATE__?: {
+        completedSaves: number;
+        held: boolean;
+        openProjectCalls: number;
+        releaseSave?: () => void;
+        restore: () => void;
+        saveCalls: number;
+    };
+};
+
+// Delay only the selected save; every persistence command still reaches the real Rust backend.
+// The native folder picker is substituted so a controlled fixture can be opened unattended.
+async function installIpcGate(requestId: string | null, selectedRoot: string | null = null) {
+    await browser.execute(
+        (targetId: string | null, root: string | null) => {
+            const target = window as unknown as IpcGateWindow;
+            if (target.__NEXORA_E2E_IPC_GATE__)
+                throw new Error("Ya hay una barrera IPC E2E instalada");
+            const original = window.fetch;
+            const gate: NonNullable<IpcGateWindow["__NEXORA_E2E_IPC_GATE__"]> = {
+                completedSaves: 0,
+                held: false,
+                openProjectCalls: 0,
+                saveCalls: 0,
+                restore: () => {
+                    gate.releaseSave?.();
+                    window.fetch = original;
+                    delete target.__NEXORA_E2E_IPC_GATE__;
+                },
+            };
+            target.__NEXORA_E2E_IPC_GATE__ = gate;
+            // Tauri defines invoke as non-writable. Its documented custom IPC protocol uses
+            // fetch, which can be delayed without modifying production code or native commands.
+            const intercept = async (input: RequestInfo | URL, init?: RequestInit) => {
+                const url = new URL(
+                    typeof input === "string"
+                        ? input
+                        : input instanceof URL
+                          ? input.href
+                          : input.url,
+                );
+                if (url.hostname !== "ipc.localhost") return original(input, init);
+                const command = decodeURIComponent(url.pathname.slice(1));
+                const args =
+                    typeof init?.body === "string"
+                        ? (JSON.parse(init.body) as Record<string, unknown>)
+                        : undefined;
+                if (command === "plugin:dialog|open" && root !== null) {
+                    return Response.json(root, { headers: { "Tauri-Response": "ok" } });
+                }
+                if (command === "open_project") gate.openProjectCalls++;
+                const request = args?.request as { id?: string } | undefined;
+                if (command === "save_request" && targetId !== null && request?.id === targetId) {
+                    gate.saveCalls++;
+                    if (gate.saveCalls === 1) {
+                        gate.held = true;
+                        await new Promise<void>((done) => {
+                            gate.releaseSave = () => {
+                                gate.held = false;
+                                done();
+                            };
+                        });
+                    }
+                    const result = await original(input, init);
+                    gate.completedSaves++;
+                    return result;
+                }
+                return original(input, init);
+            };
+            window.fetch = intercept as typeof window.fetch;
+            if (window.fetch !== intercept)
+                throw new Error("No se pudo instrumentar el transporte IPC E2E");
+        },
+        requestId,
+        selectedRoot,
+    );
+}
+
+async function ipcGateState() {
+    return browser.execute(() => {
+        const gate = (window as unknown as IpcGateWindow).__NEXORA_E2E_IPC_GATE__;
+        if (!gate) throw new Error("No hay barrera IPC E2E");
+        return {
+            completedSaves: gate.completedSaves,
+            held: gate.held,
+            openProjectCalls: gate.openProjectCalls,
+        };
+    });
+}
+
+async function waitForHeldSave() {
+    await browser.waitUntil(async () => (await ipcGateState()).held, { timeout: 15_000 });
+}
+
+async function releaseHeldSave() {
+    await browser.execute(() => {
+        (window as unknown as IpcGateWindow).__NEXORA_E2E_IPC_GATE__?.releaseSave?.();
+    });
+}
+
+async function restoreIpcGate() {
+    await browser.execute(() => {
+        (window as unknown as IpcGateWindow).__NEXORA_E2E_IPC_GATE__?.restore();
+    });
+}
+
+async function openProjectFromFooter() {
+    await $(".status-bar__project-trigger").click();
+    await $(".status-bar__project-menu button").click();
 }
 
 expect(existsSync(join(projectRoot, ".nexora"))).toBe(true);

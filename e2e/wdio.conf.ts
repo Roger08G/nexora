@@ -1,9 +1,11 @@
 import type { ChildProcess } from "node:child_process";
 import { spawn } from "node:child_process";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { TauriCapabilities } from "@wdio/tauri-service";
+import { browser } from "@wdio/globals";
 import {
     createProjectFixture,
     E2E_API_PORT,
@@ -73,6 +75,67 @@ export const config: WebdriverIO.Config = {
             },
         );
         await waitForApi();
+    },
+    before: async () => {
+        await browser.execute(() => {
+            const target = window as unknown as { __NEXORA_E2E_ERRORS__: string[] };
+            target.__NEXORA_E2E_ERRORS__ = [];
+            const record = (message: string) => {
+                target.__NEXORA_E2E_ERRORS__.push(message.slice(0, 1_000));
+                target.__NEXORA_E2E_ERRORS__ = target.__NEXORA_E2E_ERRORS__.slice(-20);
+            };
+            window.addEventListener("error", (event) => record(event.message));
+            window.addEventListener("unhandledrejection", (event) => record(String(event.reason)));
+        });
+    },
+    afterTest: async (test, _context, result) => {
+        if (result.passed) return;
+        const directory = join(repositoryRoot, "artifacts", "e2e");
+        mkdirSync(directory, { recursive: true });
+        const name = test.title.replace(/[^a-zA-Z0-9]+/g, "-").slice(0, 100);
+        try {
+            const state = await browser.execute(() => {
+                const active = document.querySelector('.workspace-view[data-active="true"]');
+                return {
+                    workspace: document
+                        .querySelector('[aria-current="page"]')
+                        ?.getAttribute("aria-label"),
+                    tabs: [...document.querySelectorAll(".request-tab")].map((tab) => ({
+                        active: tab.getAttribute("data-active"),
+                        text: tab.textContent,
+                    })),
+                    url: document.querySelector<HTMLInputElement>(
+                        '[aria-label="URL de la petición"]',
+                    )?.value,
+                    body: document.querySelector<HTMLTextAreaElement>('[aria-label="Body JSON"]')
+                        ?.value,
+                    response: document
+                        .querySelector(".response-panel")
+                        ?.textContent?.slice(0, 3_000),
+                    save: document.querySelector(".request-save-state")?.textContent,
+                    buttons: [...(active?.querySelectorAll("button") ?? [])].map((button) => ({
+                        text: button.textContent?.trim(),
+                        disabled: button.disabled,
+                    })),
+                    toasts: [...document.querySelectorAll(".nexora-toast")].map(
+                        (toast) => toast.textContent,
+                    ),
+                    errors:
+                        (window as unknown as { __NEXORA_E2E_ERRORS__?: string[] })
+                            .__NEXORA_E2E_ERRORS__ ?? [],
+                };
+            });
+            writeFileSync(
+                join(directory, `${name}.json`),
+                JSON.stringify({ test: test.title, error: result.error?.message, state }, null, 2),
+            );
+            await browser.saveScreenshot(join(directory, `${name}.png`));
+            console.error(
+                `E2E diagnóstico: ${name}; workspace=${state.workspace}; save=${state.save}; errors=${state.errors.length}`,
+            );
+        } catch (error) {
+            console.error(`No se pudo capturar el diagnóstico E2E: ${String(error)}`);
+        }
     },
     onComplete: async () => {
         if (apiProcess && !apiProcess.killed) apiProcess.kill();
