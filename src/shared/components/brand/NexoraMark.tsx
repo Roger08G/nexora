@@ -1,4 +1,4 @@
-import nexoraLogo from "@tauri/icons/icon.png";
+import nexoraLogo from "@tauri/icons/128x128.png";
 
 type NexoraMarkProps = {
     size?: number;
