@@ -18,6 +18,26 @@ const DEFAULT_TIMEOUT_MS: u64 = 30_000;
 const MAX_TIMEOUT_MS: u64 = 120_000;
 const MAX_RESPONSE_BYTES: usize = 10 * 1024 * 1024;
 
+pub(crate) fn same_origin_redirect_policy() -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(|attempt| {
+        let next = attempt.url();
+        // Custom API-key headers and 307/308 bodies are sensitive too. Return the
+        // redirect response so the user can explicitly request a different origin.
+        if !next.username().is_empty()
+            || next.password().is_some()
+            || next.as_str().len() > MAX_URL_BYTES
+            || !attempt
+                .previous()
+                .first()
+                .is_some_and(|original| original.origin() == next.origin())
+        {
+            attempt.stop()
+        } else {
+            reqwest::redirect::Policy::limited(10).redirect(attempt)
+        }
+    })
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HttpRequestInput {
@@ -66,7 +86,8 @@ async fn execute(
     validate_request(&request)?;
     let method = Method::from_bytes(request.method.trim().as_bytes())
         .map_err(|_| AppError::Validation("Método HTTP no válido".into()))?;
-    let resolved_url = resolve_template(request.url.trim(), &request.variables)?;
+    let resolved_url =
+        resolve_template_with_limit(request.url.trim(), &request.variables, MAX_URL_BYTES)?;
     let mut url = Url::parse(&resolved_url)
         .map_err(|error| AppError::Validation(format!("URL no válida: {error}")))?;
     if !matches!(url.scheme(), "http" | "https") {
@@ -80,36 +101,50 @@ async fn execute(
         ));
     }
 
-    {
-        let mut query = url.query_pairs_mut();
-        for parameter in request.params.iter().filter(|item| item.enabled) {
-            let key = parameter.key.trim();
-            if !key.is_empty() {
-                query.append_pair(
-                    &resolve_template(key, &request.variables)?,
-                    &resolve_template(&parameter.value, &request.variables)?,
-                );
+    for parameter in request.params.iter().filter(|item| item.enabled) {
+        let key = parameter.key.trim();
+        if !key.is_empty() {
+            let key = resolve_template_with_limit(key, &request.variables, MAX_URL_BYTES)?;
+            let value =
+                resolve_template_with_limit(&parameter.value, &request.variables, MAX_URL_BYTES)?;
+            url.query_pairs_mut().append_pair(&key, &value);
+            if url.as_str().len() > MAX_URL_BYTES {
+                return Err(AppError::Validation(
+                    "La URL resuelta es demasiado grande".into(),
+                ));
             }
         }
     }
 
+    let mut remaining_bytes = MAX_TEMPLATE_BYTES.saturating_sub(url.as_str().len());
     let mut builder = client.request(method, url);
     for header in request.headers.iter().filter(|item| item.enabled) {
         let key = header.key.trim();
         if key.is_empty() {
             continue;
         }
-        let resolved_key = resolve_template(key, &request.variables)?;
+        let resolved_key =
+            resolve_template_with_limit(key, &request.variables, remaining_bytes.min(64 * 1024))?;
+        remaining_bytes -= resolved_key.len();
         let name = reqwest::header::HeaderName::from_bytes(resolved_key.as_bytes())
             .map_err(|_| AppError::Validation("Nombre de header no válido".into()))?;
-        let resolved_value = resolve_template(&header.value, &request.variables)?;
+        let resolved_value = resolve_template_with_limit(
+            &header.value,
+            &request.variables,
+            remaining_bytes.min(1024 * 1024),
+        )?;
+        remaining_bytes -= resolved_value.len();
         let value = reqwest::header::HeaderValue::from_str(&resolved_value)
             .map_err(|_| AppError::Validation(format!("Valor no válido para el header {key}")))?;
         builder = builder.header(name, value);
     }
 
     if !request.body.is_empty() {
-        builder = builder.body(resolve_template(&request.body, &request.variables)?);
+        builder = builder.body(resolve_template_with_limit(
+            &request.body,
+            &request.variables,
+            remaining_bytes,
+        )?);
     }
     let timeout_ms = request
         .timeout_ms
@@ -155,11 +190,20 @@ fn serialize_headers(headers: &HeaderMap) -> Vec<ResponseHeader> {
         .collect()
 }
 
+#[cfg(test)]
 fn resolve_template(value: &str, variables: &HashMap<String, String>) -> Result<String, AppError> {
-    let mut output = String::with_capacity(value.len());
+    resolve_template_with_limit(value, variables, MAX_TEMPLATE_BYTES)
+}
+
+fn resolve_template_with_limit(
+    value: &str,
+    variables: &HashMap<String, String>,
+    limit: usize,
+) -> Result<String, AppError> {
+    let mut output = String::with_capacity(value.len().min(limit));
     let mut remaining = value;
     while let Some(start) = remaining.find("{{") {
-        push_bounded(&mut output, &remaining[..start])?;
+        push_bounded(&mut output, &remaining[..start], limit)?;
         let after_start = &remaining[start + 2..];
         let Some(end) = after_start.find("}}") else {
             return Err(AppError::Validation("Variable sin cierre }}".into()));
@@ -173,10 +217,10 @@ fn resolve_template(value: &str, variables: &HashMap<String, String>) -> Result<
                 "La variable {{{{{name}}}}} no tiene valor de sesión"
             ))
         })?;
-        push_bounded(&mut output, replacement)?;
+        push_bounded(&mut output, replacement, limit)?;
         remaining = &after_start[end + 2..];
     }
-    push_bounded(&mut output, remaining)?;
+    push_bounded(&mut output, remaining, limit)?;
     Ok(output)
 }
 
@@ -245,8 +289,8 @@ fn validate_request(request: &HttpRequestInput) -> Result<(), AppError> {
     Ok(())
 }
 
-fn push_bounded(output: &mut String, value: &str) -> Result<(), AppError> {
-    if output.len().saturating_add(value.len()) > MAX_TEMPLATE_BYTES {
+fn push_bounded(output: &mut String, value: &str, limit: usize) -> Result<(), AppError> {
+    if output.len().saturating_add(value.len()) > limit {
         return Err(AppError::Validation(
             "El contenido resuelto de la petición es demasiado grande".into(),
         ));

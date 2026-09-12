@@ -158,3 +158,105 @@ fn project_requests_history_and_monitors_round_trip_through_tauri_ipc() {
         .unwrap()
         .is_empty());
 }
+
+#[test]
+fn rejects_resource_identity_mismatches_and_duplicate_request_ids() {
+    let app = TestApp::new();
+    let project = TempDirectory::new("resource-identity");
+    let root = project.string();
+    app.ok(
+        "create_project",
+        json!({ "name": "Identity", "root": root }),
+    );
+    let request = json!({
+        "id": "health", "collectionId": "general", "collectionName": "General", "name": "Health",
+        "method": "GET", "url": "http://localhost/health", "headers": [], "params": [], "body": ""
+    });
+    app.ok(
+        "save_request",
+        json!({ "projectRoot": root, "request": request }),
+    );
+    let mut duplicate = request.clone();
+    duplicate["collectionId"] = json!("other");
+    duplicate["collectionName"] = json!("Other");
+    app.error(
+        "save_request",
+        json!({ "projectRoot": root, "request": duplicate }),
+        "conflict",
+    );
+    assert!(project
+        .path()
+        .join("requests/general/health.json")
+        .is_file());
+    assert!(!project.path().join("requests/other/health.json").exists());
+
+    let mut mismatched = request.clone();
+    mismatched["id"] = json!("different");
+    std::fs::write(
+        project.path().join("requests/general/health.json"),
+        serde_json::to_vec(&mismatched).unwrap(),
+    )
+    .unwrap();
+    app.error(
+        "list_requests",
+        json!({ "projectRoot": root }),
+        "validation_error",
+    );
+    std::fs::write(
+        project.path().join("requests/general/health.json"),
+        serde_json::to_vec(&request).unwrap(),
+    )
+    .unwrap();
+
+    std::fs::write(
+        project.path().join("folders/general.json"),
+        br#"{"id":"other","name":"General"}"#,
+    )
+    .unwrap();
+    app.error(
+        "list_request_folders",
+        json!({ "projectRoot": root }),
+        "validation_error",
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn deleting_a_request_cannot_follow_a_directory_junction_outside_the_project() {
+    use std::{os::windows::process::CommandExt, process::Command};
+    let app = TestApp::new();
+    let project = TempDirectory::new("junction-project");
+    let outside = TempDirectory::new("junction-outside");
+    let root = project.string();
+    app.ok(
+        "create_project",
+        json!({ "name": "Junction", "root": root }),
+    );
+    let victim = outside.path().join("health.json");
+    std::fs::write(&victim, "preserve unrelated file").unwrap();
+    let junction = project.path().join("requests").join("external");
+    let output = Command::new("cmd.exe")
+        .args(["/C", "mklink", "/J"])
+        .arg(&junction)
+        .arg(outside.path())
+        .creation_flags(0x0800_0000)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "junction fixture: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    app.error(
+        "delete_request",
+        json!({
+            "projectRoot": root, "collectionId": "external", "requestId": "health"
+        }),
+        "validation_error",
+    );
+    assert_eq!(
+        std::fs::read_to_string(victim).unwrap(),
+        "preserve unrelated file"
+    );
+    std::fs::remove_dir(junction).unwrap();
+}

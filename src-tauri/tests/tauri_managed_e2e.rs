@@ -223,6 +223,15 @@ fn managed_postgresql_crud_runs_end_to_end_through_tauri_ipc() {
     );
     execute("UPDATE users SET active = true WHERE id = 1", true);
     let selected = execute("SELECT id, name, active FROM users ORDER BY id", false);
+    let empty = execute("SELECT id, name, active FROM users WHERE false", false);
+    assert_eq!(empty["columns"], json!(["id", "name", "active"]));
+    assert_eq!(empty["rows"], json!([]));
+    let duplicate = execute("SELECT 1 AS id, 2 AS id, 3 AS \"id (2)\"", false);
+    assert_eq!(duplicate["columns"], json!(["id", "id (3)", "id (2)"]));
+    assert_eq!(
+        duplicate["rows"][0],
+        json!({ "id": 1, "id (3)": 2, "id (2)": 3 })
+    );
     assert_eq!(selected["rows"].as_array().unwrap().len(), 2);
     assert_eq!(selected["rows"][0]["active"], true);
 

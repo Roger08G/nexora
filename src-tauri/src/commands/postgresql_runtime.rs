@@ -16,7 +16,7 @@ use uuid::Uuid;
 
 use crate::{
     commands::{
-        local_runtime::{process_owns_loopback_port, wait_for_closed_port},
+        local_runtime::{process_owns_loopback_port, runtime_roots, wait_for_closed_port},
         projects::project_runtime_context,
     },
     error::{AppError, CommandResult},
@@ -403,13 +403,22 @@ fn find_postgresql_distribution() -> Result<PostgresDistribution, AppError> {
             return Ok(distribution);
         }
     }
-    let local_app_data = std::env::var_os("LOCALAPPDATA")
-        .ok_or_else(|| AppError::NotFound("LOCALAPPDATA no está disponible".into()))?;
-    let home = PathBuf::from(local_app_data)
-        .join("Nexora/runtimes/postgresql")
-        .join(PREFERRED_POSTGRESQL_VERSION)
-        .join("pgsql");
-    distribution_at(&home, PREFERRED_POSTGRESQL_VERSION)
+    find_postgresql_in(&runtime_roots())
+}
+
+fn find_postgresql_in(roots: &[PathBuf]) -> Result<PostgresDistribution, AppError> {
+    for root in roots {
+        let home = root
+            .join("postgresql")
+            .join(PREFERRED_POSTGRESQL_VERSION)
+            .join("pgsql");
+        if let Ok(distribution) = distribution_at(&home, PREFERRED_POSTGRESQL_VERSION) {
+            return Ok(distribution);
+        }
+    }
+    Err(AppError::NotFound(format!(
+        "No se encontró PostgreSQL {PREFERRED_POSTGRESQL_VERSION} en los runtimes de Nexora"
+    )))
 }
 
 fn distribution_at(home: &Path, version: &str) -> Result<PostgresDistribution, AppError> {
@@ -1067,6 +1076,25 @@ mod tests {
     #[test]
     fn allocates_a_loopback_port() {
         assert_ne!(free_loopback_port().unwrap(), 0);
+    }
+
+    #[test]
+    fn discovers_a_complete_portable_postgresql_distribution() {
+        let root = std::env::temp_dir().join(format!("nexora-pg-layout-{}", uuid::Uuid::new_v4()));
+        let bin = root.join("postgresql/18.6/pgsql/bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(bin.join("postgres.exe"), b"fixture").unwrap();
+        assert!(super::find_postgresql_in(std::slice::from_ref(&root)).is_err());
+        for name in ["initdb.exe", "pg_ctl.exe"] {
+            std::fs::write(bin.join(name), b"fixture").unwrap();
+        }
+        assert_eq!(
+            super::find_postgresql_in(std::slice::from_ref(&root))
+                .unwrap()
+                .postgres,
+            bin.join("postgres.exe")
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

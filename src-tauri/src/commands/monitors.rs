@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 
 use crate::{
-    commands::projects::project_runtime_context,
+    commands::projects::{project_runtime_context, validate_resource_filename},
     error::{AppError, CommandResult},
     limits::{MAX_MONITORS, MAX_SMALL_FILE_BYTES},
     state::AppState,
@@ -91,6 +91,7 @@ fn list_monitors_sync(project_root: &str) -> Result<Vec<LocalMonitor>, AppError>
         let monitor: LocalMonitor =
             read_json(&entry.path(), MAX_SMALL_FILE_BYTES, "El monitor local")?;
         validate_monitor(&monitor)?;
+        validate_resource_filename(&entry.path(), &monitor.id)?;
         monitors.push(monitor);
         if monitors.len() > MAX_MONITORS {
             return Err(AppError::Validation(format!(
@@ -119,6 +120,11 @@ fn save_monitor_sync(
         let existing: LocalMonitor = read_json(&path, MAX_SMALL_FILE_BYTES, "El monitor local")?;
         existing.created_at_ms
     } else {
+        if list_monitors_sync(project_root)?.len() >= MAX_MONITORS {
+            return Err(AppError::Validation(
+                "El proyecto alcanzó el límite de monitores".into(),
+            ));
+        }
         now
     };
     monitor.updated_at_ms = now;

@@ -69,7 +69,7 @@ pub(crate) fn read_tail(path: &Path, max_bytes: usize) -> Result<String, AppErro
     let offset = length.saturating_sub(max_bytes as u64);
     file.seek(SeekFrom::Start(offset))?;
     let mut bytes = Vec::with_capacity((length - offset) as usize);
-    file.read_to_end(&mut bytes)?;
+    file.take(length - offset).read_to_end(&mut bytes)?;
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
@@ -130,7 +130,6 @@ fn write_atomic(path: &Path, contents: &[u8], max_bytes: usize) -> Result<(), Ap
     }
 
     let temporary = sibling_path(path, "tmp")?;
-    let backup = sibling_path(path, "bak")?;
     let write_result = (|| -> Result<(), AppError> {
         let mut file = OpenOptions::new()
             .create_new(true)
@@ -140,16 +139,9 @@ fn write_atomic(path: &Path, contents: &[u8], max_bytes: usize) -> Result<(), Ap
         file.sync_all()?;
         drop(file);
 
-        if path.exists() {
-            fs::rename(path, &backup)?;
-            if let Err(error) = fs::rename(&temporary, path) {
-                let _ = fs::rename(&backup, path);
-                return Err(error.into());
-            }
-            let _ = fs::remove_file(&backup);
-        } else {
-            fs::rename(&temporary, path)?;
-        }
+        // rename replaces an existing file atomically on supported desktop OSes.
+        // Moving the original away first leaves a crash window with no document.
+        fs::rename(&temporary, path)?;
         Ok(())
     })();
 
@@ -191,7 +183,7 @@ fn display_mebibytes(bytes: usize) -> usize {
 mod tests {
     use serde::{Deserialize, Serialize};
 
-    use super::{read_json, read_text, write_json_atomic, write_text_atomic};
+    use super::{read_json, read_tail, read_text, write_json_atomic, write_text_atomic};
 
     #[derive(Debug, Deserialize, PartialEq, Serialize)]
     struct Fixture {
@@ -245,6 +237,56 @@ mod tests {
         assert!(read_text(&path, 4, "fixture").is_err());
         assert!(write_text_atomic(&path, "demasiado", 4).is_err());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "demasiado");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn tail_read_retains_only_the_requested_log_suffix() {
+        let root = std::env::temp_dir().join(format!("nexora-tail-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root).unwrap();
+        let path = root.join("runtime.log");
+        std::fs::write(&path, "old-lines\nlast-line").unwrap();
+        assert_eq!(read_tail(&path, 9).unwrap(), "last-line");
+        assert_eq!(read_tail(&path, 0).unwrap(), "");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn replacing_a_file_never_exposes_a_missing_or_partial_document_to_readers() {
+        let root = std::env::temp_dir().join(format!("nexora-atomic-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root).unwrap();
+        let path = root.join("request.json");
+        write_json_atomic(
+            &path,
+            &Fixture {
+                value: "initial".into(),
+            },
+            1_024,
+        )
+        .unwrap();
+        let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let reader = std::thread::spawn({
+            let path = path.clone();
+            let done = done.clone();
+            move || {
+                while !done.load(std::sync::atomic::Ordering::Acquire) {
+                    let value = read_json::<Fixture>(&path, 1_024, "request").unwrap();
+                    assert!(!value.value.is_empty());
+                }
+            }
+        });
+        for index in 0..64 {
+            write_json_atomic(
+                &path,
+                &Fixture {
+                    value: format!("revision-{index}"),
+                },
+                1_024,
+            )
+            .unwrap();
+        }
+        done.store(true, std::sync::atomic::Ordering::Release);
+        reader.join().unwrap();
         std::fs::remove_dir_all(root).unwrap();
     }
 }

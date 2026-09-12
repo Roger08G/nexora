@@ -17,7 +17,7 @@ pub struct AppState {
     pub monitor_io: Arc<Mutex<()>>,
     pub project_io: Arc<Mutex<()>>,
     pub mongo: Mutex<HashMap<String, MongoClient>>,
-    pub mongo_connect_attempts: AtomicUsize,
+    pub mongo_connect_attempts: Arc<AtomicUsize>,
     pub managed_mongo: Mutex<Option<ManagedMongoRuntime>>,
     pub managed_mongo_lifecycle: tokio::sync::Mutex<()>,
     pub managed_postgres: Mutex<Option<ManagedPostgresRuntime>>,
@@ -30,7 +30,8 @@ impl AppState {
             .connect_timeout(Duration::from_secs(10))
             .pool_idle_timeout(Duration::from_secs(60))
             .pool_max_idle_per_host(4)
-            .redirect(reqwest::redirect::Policy::limited(10))
+            .redirect(crate::commands::http::same_origin_redirect_policy())
+            .referer(false)
             .tcp_keepalive(Duration::from_secs(30))
             .user_agent(concat!("Nexora/", env!("CARGO_PKG_VERSION")))
             .build()?;
@@ -41,7 +42,7 @@ impl AppState {
             monitor_io: Arc::new(Mutex::new(())),
             project_io: Arc::new(Mutex::new(())),
             mongo: Mutex::new(HashMap::new()),
-            mongo_connect_attempts: AtomicUsize::new(0),
+            mongo_connect_attempts: Arc::new(AtomicUsize::new(0)),
             managed_mongo: Mutex::new(None),
             managed_mongo_lifecycle: tokio::sync::Mutex::new(()),
             managed_postgres: Mutex::new(None),

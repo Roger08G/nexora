@@ -14,7 +14,9 @@ use uuid::Uuid;
 
 use crate::{
     commands::{
-        local_runtime::{process_loopback_ports, process_owns_loopback_port, wait_for_closed_port},
+        local_runtime::{
+            process_loopback_ports, process_owns_loopback_port, runtime_roots, wait_for_closed_port,
+        },
         projects::project_runtime_context,
     },
     error::{AppError, CommandResult},
@@ -25,7 +27,7 @@ use crate::{
 
 const MANAGED_USERNAME: &str = "nexora_local";
 const KEYRING_SERVICE: &str = "Nexora Managed MongoDB";
-const PREFERRED_MONGODB_VERSION: &str = "8.3.8";
+const PREFERRED_MONGODB_VERSION: &str = "8.3.11";
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(15);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -372,10 +374,13 @@ pub(crate) async fn stop_managed_internal(state: &AppState) -> Result<(), AppErr
         .map_err(|_| AppError::Internal("El estado de MongoDB está bloqueado".into()))?
         .remove(&runtime.connection_id);
     if let Some(client) = client {
-        let _ = client
-            .database("admin")
-            .run_command(doc! { "shutdown": 1, "force": true })
-            .await;
+        let shutdown = tauri::async_runtime::spawn(async move {
+            client
+                .database("admin")
+                .run_command(doc! { "shutdown": 1, "force": true })
+                .await
+        });
+        let _ = tokio::time::timeout(SHUTDOWN_TIMEOUT, shutdown).await;
     }
     tauri::async_runtime::spawn_blocking(move || runtime.stop())
         .await
@@ -390,20 +395,21 @@ fn find_mongod() -> Result<(PathBuf, String), AppError> {
             return Ok((path, "custom".into()));
         }
     }
-    let local_app_data = std::env::var_os("LOCALAPPDATA")
-        .ok_or_else(|| AppError::NotFound("LOCALAPPDATA no está disponible".into()))?;
-    let path = PathBuf::from(local_app_data)
-        .join("Nexora/runtimes/mongodb")
-        .join(PREFERRED_MONGODB_VERSION)
-        .join("mongod.exe");
-    if !path.is_file() {
-        return Err(AppError::NotFound(format!(
-            "No se encontró el runtime MongoDB {} en {}",
-            PREFERRED_MONGODB_VERSION,
-            path.display()
-        )));
+    find_mongod_in(&runtime_roots())
+}
+
+fn find_mongod_in(roots: &[PathBuf]) -> Result<(PathBuf, String), AppError> {
+    for version in [PREFERRED_MONGODB_VERSION, "8.3.8"] {
+        for root in roots {
+            let path = root.join("mongodb").join(version).join("mongod.exe");
+            if path.is_file() {
+                return Ok((path, version.into()));
+            }
+        }
     }
-    Ok((path, PREFERRED_MONGODB_VERSION.into()))
+    Err(AppError::NotFound(format!(
+        "No se encontró MongoDB {PREFERRED_MONGODB_VERSION} en los runtimes de Nexora"
+    )))
 }
 
 fn project_password(project_id: &str, initialized: bool) -> Result<String, AppError> {
@@ -569,12 +575,36 @@ mod tests {
     fn finds_the_installed_managed_runtime() {
         let (path, version) = find_mongod().expect("managed mongod runtime");
         assert!(path.is_file());
-        assert_eq!(version, "8.3.8");
+        assert!(matches!(version.as_str(), "8.3.11" | "8.3.8" | "custom"));
     }
 
     #[test]
     fn allocates_a_loopback_port() {
         assert_ne!(free_loopback_port().unwrap(), 0);
+    }
+
+    #[test]
+    fn finds_portable_mongodb_and_prefers_a_patched_runtime() {
+        let root =
+            std::env::temp_dir().join(format!("nexora-mongo-layout-{}", uuid::Uuid::new_v4()));
+        let portable = root.join("portable/runtimes");
+        let installed = root.join("user/Nexora/runtimes");
+        let old = portable.join("mongodb/8.3.8/mongod.exe");
+        let patched = installed.join("mongodb/8.3.11/mongod.exe");
+        for path in [&old, &patched] {
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, b"fixture").unwrap();
+        }
+        let roots = vec![portable, installed];
+        assert_eq!(
+            super::find_mongod_in(&roots).unwrap(),
+            (patched, "8.3.11".into())
+        );
+        assert_eq!(
+            super::find_mongod_in(&roots[..1]).unwrap(),
+            (old, "8.3.8".into())
+        );
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

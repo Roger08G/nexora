@@ -1,4 +1,5 @@
 use std::{
+    collections::HashSet,
     fs,
     path::{Path, PathBuf},
 };
@@ -9,8 +10,9 @@ use tauri::State;
 use crate::{
     error::{AppError, CommandResult},
     limits::{
-        MAX_BODY_BYTES, MAX_HTTP_ITEMS, MAX_PROJECT_FILE_BYTES, MAX_PROJECT_FOLDERS,
-        MAX_PROJECT_METRIC_ENTRIES, MAX_PROJECT_REQUESTS, MAX_SMALL_FILE_BYTES,
+        MAX_BODY_BYTES, MAX_HTTP_ITEMS, MAX_PROJECT_CONTENT_BYTES, MAX_PROJECT_FILE_BYTES,
+        MAX_PROJECT_FOLDERS, MAX_PROJECT_METRIC_ENTRIES, MAX_PROJECT_REQUESTS,
+        MAX_SMALL_FILE_BYTES,
     },
     state::AppState,
     storage::{
@@ -291,6 +293,7 @@ fn list_request_folders_sync(project_root: &str) -> Result<Vec<RequestFolder>, A
         }
         let folder: RequestFolder = read_json(&entry.path(), MAX_SMALL_FILE_BYTES, "La carpeta")?;
         validate_request_folder(&folder)?;
+        validate_resource_filename(&entry.path(), &folder.id)?;
         folders.push(folder);
         if folders.len() > MAX_PROJECT_FOLDERS {
             return Err(AppError::Validation(format!(
@@ -307,7 +310,13 @@ fn create_request_folder_sync(project_root: &str, name: &str) -> Result<RequestF
     ensure_request_folders(&root)?;
     let name = validated_folder_name(name)?;
     let normalized_name = name.to_lowercase();
-    if list_request_folders_sync(project_root)?
+    let folders = list_request_folders_sync(project_root)?;
+    if folders.len() >= MAX_PROJECT_FOLDERS {
+        return Err(AppError::Validation(
+            "El proyecto alcanzó el límite de carpetas".into(),
+        ));
+    }
+    if folders
         .iter()
         .any(|folder| folder.name.to_lowercase() == normalized_name)
     {
@@ -339,8 +348,50 @@ fn save_request_sync(
     let directory = requests_dir(&root).join(&request.collection_id);
     ensure_directory(&directory)?;
     let path = directory.join(format!("{}.json", request.id));
-    write_json_atomic(&path, &request)?;
+    let mut contents = serde_json::to_string_pretty(&request)?;
+    contents.push('\n');
+    validate_request_capacity(&root, &path, contents.len() as u64)?;
+    write_text_atomic(&path, &contents, MAX_PROJECT_FILE_BYTES)?;
     Ok(request)
+}
+
+fn validate_request_capacity(root: &Path, target: &Path, new_bytes: u64) -> Result<(), AppError> {
+    let mut bytes = new_bytes;
+    let mut count = 1;
+    for folder in fs::read_dir(requests_dir(root))? {
+        let folder = folder?;
+        if !folder.file_type()?.is_dir() {
+            continue;
+        }
+        for entry in fs::read_dir(folder.path())? {
+            let entry = entry?;
+            let path = entry.path();
+            if !entry.file_type()?.is_file()
+                || path.extension().and_then(|value| value.to_str()) != Some("json")
+                || path == target
+            {
+                continue;
+            }
+            if path.file_name() == target.file_name() {
+                return Err(AppError::Conflict(
+                    "Ya existe una petición con ese identificador en otra carpeta".into(),
+                ));
+            }
+            count += 1;
+            bytes = bytes.saturating_add(entry.metadata()?.len());
+            if count > MAX_PROJECT_REQUESTS || bytes > MAX_PROJECT_CONTENT_BYTES {
+                return Err(AppError::Validation(
+                    "El proyecto alcanzó el límite de peticiones o de tamaño".into(),
+                ));
+            }
+        }
+    }
+    if bytes > MAX_PROJECT_CONTENT_BYTES {
+        return Err(AppError::Validation(
+            "Las peticiones del proyecto superan el tamaño permitido".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn delete_request_sync(
@@ -351,9 +402,9 @@ fn delete_request_sync(
     let root = validated_project_root(project_root)?;
     validate_slug("carpeta", collection_id)?;
     validate_slug("petición", request_id)?;
-    let path = requests_dir(&root)
-        .join(collection_id)
-        .join(format!("{request_id}.json"));
+    let directory = requests_dir(&root).join(collection_id);
+    validate_directory(&directory)?;
+    let path = directory.join(format!("{request_id}.json"));
     if !path.is_file() {
         return Err(AppError::NotFound("La petición no existe".into()));
     }
@@ -365,8 +416,11 @@ fn ensure_request_folders(root: &Path) -> Result<(), AppError> {
     ensure_directory(&requests_dir(root))?;
     ensure_directory(&folders_dir(root))?;
     let requests = list_requests_from_root(root)?;
+    let mut seen = HashSet::new();
     for request in requests {
-        ensure_request_folder(root, &request.collection_id, &request.collection_name)?;
+        if seen.insert(request.collection_id.clone()) {
+            ensure_request_folder(root, &request.collection_id, &request.collection_name)?;
+        }
     }
     if fs::read_dir(folders_dir(root))?.next().is_none() {
         write_request_folder(
@@ -384,6 +438,8 @@ fn list_requests_from_root(root: &Path) -> Result<Vec<SavedRequest>, AppError> {
     let directory = requests_dir(root);
     ensure_directory(&directory)?;
     let mut requests = Vec::new();
+    let mut identities = HashSet::new();
+    let mut content_bytes = 0_u64;
     for folder in fs::read_dir(directory)? {
         let folder = folder?;
         if !folder.file_type()?.is_dir() {
@@ -396,9 +452,24 @@ fn list_requests_from_root(root: &Path) -> Result<Vec<SavedRequest>, AppError> {
             {
                 continue;
             }
+            content_bytes = content_bytes.saturating_add(entry.metadata()?.len());
+            if content_bytes > MAX_PROJECT_CONTENT_BYTES {
+                return Err(AppError::Validation(format!(
+                    "Las peticiones del proyecto superan el límite de {} MiB",
+                    MAX_PROJECT_CONTENT_BYTES / 1024 / 1024
+                )));
+            }
             let request: SavedRequest =
                 read_json(&entry.path(), MAX_PROJECT_FILE_BYTES, "La petición")?;
             validate_request(&request)?;
+            validate_resource_filename(&entry.path(), &request.id)?;
+            if folder.file_name().to_str() != Some(&request.collection_id)
+                || !identities.insert(request.id.clone())
+            {
+                return Err(AppError::Validation(
+                    "La petición tiene una carpeta incorrecta o un identificador duplicado".into(),
+                ));
+            }
             requests.push(request);
             if requests.len() > MAX_PROJECT_REQUESTS {
                 return Err(AppError::Validation(format!(
@@ -420,6 +491,7 @@ fn ensure_request_folder(
     if path.is_file() {
         let folder: RequestFolder = read_json(&path, MAX_SMALL_FILE_BYTES, "La carpeta")?;
         validate_request_folder(&folder)?;
+        validate_resource_filename(&path, &folder.id)?;
         return Ok(folder);
     }
     let folder = RequestFolder {
@@ -430,13 +502,42 @@ fn ensure_request_folder(
     Ok(folder)
 }
 
+pub(crate) fn validate_resource_filename(path: &Path, id: &str) -> Result<(), AppError> {
+    if path.file_stem().and_then(|stem| stem.to_str()) == Some(id) {
+        Ok(())
+    } else {
+        Err(AppError::Validation(
+            "El identificador del recurso no coincide con su archivo JSON".into(),
+        ))
+    }
+}
+
 fn write_request_folder(root: &Path, folder: &RequestFolder) -> Result<(), AppError> {
     validate_request_folder(folder)?;
     ensure_directory(&folders_dir(root))?;
-    write_json_atomic(
-        &folders_dir(root).join(format!("{}.json", folder.id)),
-        folder,
-    )
+    let path = folders_dir(root).join(format!("{}.json", folder.id));
+    if !path.exists() {
+        let count = fs::read_dir(folders_dir(root))?.try_fold(
+            0_usize,
+            |count, entry| -> Result<usize, AppError> {
+                let entry = entry?;
+                Ok(count
+                    + usize::from(
+                        entry.file_type()?.is_file()
+                            && entry
+                                .path()
+                                .extension()
+                                .is_some_and(|extension| extension == "json"),
+                    ))
+            },
+        )?;
+        if count >= MAX_PROJECT_FOLDERS {
+            return Err(AppError::Validation(
+                "El proyecto alcanzó el límite de carpetas".into(),
+            ));
+        }
+    }
+    write_json_atomic(&path, folder)
 }
 
 fn validate_request_folder(folder: &RequestFolder) -> Result<(), AppError> {

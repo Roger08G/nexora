@@ -27,6 +27,37 @@ const MONGO_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const MONGO_OPERATION_TIMEOUT: Duration = Duration::from_secs(30);
 const MONGO_MAX_POOL_SIZE: u32 = 10;
 
+static MONGO_OPERATIONS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(16);
+
+async fn with_mongo_deadline<T: Send + 'static, E: From<AppError> + Send + 'static>(
+    operation: impl std::future::Future<Output = Result<T, E>> + Send + 'static,
+) -> Result<T, E> {
+    mongo_deadline_after(operation, MONGO_OPERATION_TIMEOUT).await
+}
+
+async fn mongo_deadline_after<T: Send + 'static, E: From<AppError> + Send + 'static>(
+    operation: impl std::future::Future<Output = Result<T, E>> + Send + 'static,
+    deadline: Duration,
+) -> Result<T, E> {
+    let permit = MONGO_OPERATIONS.try_acquire().map_err(|_| {
+        E::from(AppError::Conflict(
+            "MongoDB alcanzó el límite de operaciones pendientes".into(),
+        ))
+    })?;
+    // MongoDB futures are not cancellation-safe (driver RUST-937). Time out the
+    // JoinHandle while the bounded worker retains its permit until completion.
+    let worker = tauri::async_runtime::spawn(async move {
+        let _permit = permit;
+        operation.await
+    });
+    tokio::time::timeout(deadline, worker)
+        .await
+        .map_err(|_| E::from(AppError::Validation(
+            "MongoDB superó el tiempo de espera; comprueba el estado antes de repetir una escritura".into(),
+        )))?
+        .map_err(|_| E::from(AppError::Internal("La operación MongoDB no pudo completarse".into())))?
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MongoConnectionInput {
@@ -130,7 +161,6 @@ pub async fn connect_mongodb(
     state: State<'_, AppState>,
     input: MongoConnectionInput,
 ) -> CommandResult<MongoConnectionOutput> {
-    let _attempt = acquire_connect_attempt(&state.mongo_connect_attempts)?;
     if state
         .mongo
         .lock()
@@ -143,45 +173,51 @@ pub async fn connect_mongodb(
         ))
         .into());
     }
-    let uri = input.uri.trim();
-    if uri.len() > MAX_URL_BYTES
-        || !(uri.starts_with("mongodb://") || uri.starts_with("mongodb+srv://"))
-    {
-        return Err(AppError::Validation(
-            "La URI debe comenzar por mongodb:// o mongodb+srv://".into(),
-        )
-        .into());
-    }
+    let attempts = state.mongo_connect_attempts.clone();
+    let (client, databases) = with_mongo_deadline(async move {
+        let _attempt = acquire_connect_attempt(&attempts)?;
+        let uri = input.uri.trim();
+        if uri.len() > MAX_URL_BYTES
+            || !(uri.starts_with("mongodb://") || uri.starts_with("mongodb+srv://"))
+        {
+            return Err(AppError::Validation(
+                "La URI debe comenzar por mongodb:// o mongodb+srv://".into(),
+            )
+            .into());
+        }
 
-    let mut options = ClientOptions::parse(uri).await.map_err(mongo_error)?;
-    options.connect_timeout = Some(
-        options
-            .connect_timeout
-            .unwrap_or(MONGO_CONNECT_TIMEOUT)
-            .min(MONGO_CONNECT_TIMEOUT),
-    );
-    options.server_selection_timeout = Some(
-        options
-            .server_selection_timeout
-            .unwrap_or(MONGO_CONNECT_TIMEOUT)
-            .min(MONGO_CONNECT_TIMEOUT),
-    );
-    let max_pool_size = options
-        .max_pool_size
-        .unwrap_or(MONGO_MAX_POOL_SIZE)
-        .clamp(1, MONGO_MAX_POOL_SIZE);
-    options.max_pool_size = Some(max_pool_size);
-    options.max_connecting = Some(options.max_connecting.unwrap_or(2).clamp(1, 2));
-    options.min_pool_size = options.min_pool_size.map(|size| size.min(max_pool_size));
-    let client = Client::with_options(options).map_err(mongo_error)?;
-    client
-        .database("admin")
-        .run_command(doc! { "ping": 1 })
-        .await
-        .map_err(mongo_error)?;
-    let mut databases = client.list_database_names().await.map_err(mongo_error)?;
-    databases.sort_by_key(|name| name.to_lowercase());
+        let mut options = ClientOptions::parse(uri).await.map_err(mongo_error)?;
+        options.connect_timeout = Some(
+            options
+                .connect_timeout
+                .unwrap_or(MONGO_CONNECT_TIMEOUT)
+                .min(MONGO_CONNECT_TIMEOUT),
+        );
+        options.server_selection_timeout = Some(
+            options
+                .server_selection_timeout
+                .unwrap_or(MONGO_CONNECT_TIMEOUT)
+                .min(MONGO_CONNECT_TIMEOUT),
+        );
+        let max_pool_size = options
+            .max_pool_size
+            .unwrap_or(MONGO_MAX_POOL_SIZE)
+            .clamp(1, MONGO_MAX_POOL_SIZE);
+        options.max_pool_size = Some(max_pool_size);
+        options.max_connecting = Some(options.max_connecting.unwrap_or(2).clamp(1, 2));
+        options.min_pool_size = options.min_pool_size.map(|size| size.min(max_pool_size));
+        let client = Client::with_options(options).map_err(mongo_error)?;
+        client
+            .database("admin")
+            .run_command(doc! { "ping": 1 })
+            .await
+            .map_err(mongo_error)?;
+        let mut databases = client.list_database_names().await.map_err(mongo_error)?;
+        databases.sort_by_key(|name| name.to_lowercase());
 
+        Ok::<_, crate::error::CommandError>((client, databases))
+    })
+    .await?;
     let connection_id = Uuid::new_v4().to_string();
     let mut connections = state
         .mongo
@@ -218,9 +254,12 @@ pub async fn list_mongodb_databases(
     connection_id: String,
 ) -> CommandResult<Vec<String>> {
     let client = mongo_client(&state, &connection_id)?;
-    let mut names = client.list_database_names().await.map_err(mongo_error)?;
-    names.sort_by_key(|name| name.to_lowercase());
-    Ok(names)
+    with_mongo_deadline(async move {
+        let mut names = client.list_database_names().await.map_err(mongo_error)?;
+        names.sort_by_key(|name| name.to_lowercase());
+        Ok(names)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -231,14 +270,17 @@ pub async fn list_mongodb_collections(
 ) -> CommandResult<Vec<String>> {
     validate_namespace(&database, "base de datos")?;
     let client = mongo_client(&state, &connection_id)?;
-    let mut names = client
-        .database(&database)
-        .list_collection_names()
-        .await
-        .map_err(mongo_error)?;
-    names.retain(|collection| !is_protected_collection(&database, collection));
-    names.sort_by_key(|name| name.to_lowercase());
-    Ok(names)
+    with_mongo_deadline(async move {
+        let mut names = client
+            .database(&database)
+            .list_collection_names()
+            .await
+            .map_err(mongo_error)?;
+        names.retain(|collection| !is_protected_collection(&database, collection));
+        names.sort_by_key(|name| name.to_lowercase());
+        Ok(names)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -252,36 +294,39 @@ pub async fn list_mongodb_indexes(
     validate_namespace(&collection, "colección")?;
     validate_collection_access(&database, &collection)?;
     let client = mongo_client(&state, &connection_id)?;
-    let mut cursor = client
-        .database(&database)
-        .collection::<Document>(&collection)
-        .list_indexes()
-        .max_time(MONGO_OPERATION_TIMEOUT)
-        .await
-        .map_err(mongo_error)?;
-    let mut indexes = Vec::new();
-    while let Some(index) = cursor.try_next().await.map_err(mongo_error)? {
-        if indexes.len() >= MAX_INDEXES {
-            return Err(AppError::Validation(format!(
-                "La colección supera el límite de {MAX_INDEXES} índices"
-            ))
-            .into());
+    with_mongo_deadline(async move {
+        let mut cursor = client
+            .database(&database)
+            .collection::<Document>(&collection)
+            .list_indexes()
+            .max_time(MONGO_OPERATION_TIMEOUT)
+            .await
+            .map_err(mongo_error)?;
+        let mut indexes = Vec::new();
+        while let Some(index) = cursor.try_next().await.map_err(mongo_error)? {
+            if indexes.len() >= MAX_INDEXES {
+                return Err(AppError::Validation(format!(
+                    "La colección supera el límite de {MAX_INDEXES} índices"
+                ))
+                .into());
+            }
+            let options = index.options.as_ref();
+            indexes.push(MongoIndexOutput {
+                name: options
+                    .and_then(|options| options.name.clone())
+                    .unwrap_or_else(|| "Índice sin nombre".into()),
+                keys: bson_to_json(Bson::Document(index.keys)),
+                unique: options.and_then(|options| options.unique).unwrap_or(false),
+                sparse: options.and_then(|options| options.sparse).unwrap_or(false),
+                expire_after_seconds: options
+                    .and_then(|options| options.expire_after)
+                    .map(|duration| duration.as_secs()),
+            });
         }
-        let options = index.options.as_ref();
-        indexes.push(MongoIndexOutput {
-            name: options
-                .and_then(|options| options.name.clone())
-                .unwrap_or_else(|| "Índice sin nombre".into()),
-            keys: bson_to_json(Bson::Document(index.keys)),
-            unique: options.and_then(|options| options.unique).unwrap_or(false),
-            sparse: options.and_then(|options| options.sparse).unwrap_or(false),
-            expire_after_seconds: options
-                .and_then(|options| options.expire_after)
-                .map(|duration| duration.as_secs()),
-        });
-    }
-    indexes.sort_by_key(|index| index.name.to_lowercase());
-    Ok(indexes)
+        indexes.sort_by_key(|index| index.name.to_lowercase());
+        Ok(indexes)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -293,12 +338,15 @@ pub async fn create_mongodb_collection(
     validate_namespace(&input.collection, "colección")?;
     validate_collection_access(&input.database, &input.collection)?;
     let client = mongo_client(&state, &input.connection_id)?;
-    client
-        .database(&input.database)
-        .create_collection(&input.collection)
-        .await
-        .map_err(mongo_error)?;
-    Ok(())
+    with_mongo_deadline(async move {
+        client
+            .database(&input.database)
+            .create_collection(&input.collection)
+            .await
+            .map_err(mongo_error)?;
+        Ok(())
+    })
+    .await
 }
 
 #[tauri::command]
@@ -310,40 +358,43 @@ pub async fn find_mongodb(
     validate_namespace(&input.collection, "colección")?;
     validate_collection_access(&input.database, &input.collection)?;
     let client = mongo_client(&state, &input.connection_id)?;
-    let collection = client
-        .database(&input.database)
-        .collection::<Document>(&input.collection);
-    let filter = parse_document(&input.filter, "filtro")?;
-    let limit = input.limit.unwrap_or(20).clamp(1, MAX_DOCUMENTS);
+    with_mongo_deadline(async move {
+        let collection = client
+            .database(&input.database)
+            .collection::<Document>(&input.collection);
+        let filter = parse_document(&input.filter, "filtro")?;
+        let limit = input.limit.unwrap_or(20).clamp(1, MAX_DOCUMENTS);
 
-    let mut action = collection
-        .find(filter)
-        .limit(limit)
-        .max_time(MONGO_OPERATION_TIMEOUT);
-    if let Some(projection) = parse_optional_document(input.projection, "proyección")? {
-        action = action.projection(projection);
-    }
-    if let Some(sort) = parse_optional_document(input.sort, "ordenación")? {
-        action = action.sort(sort);
-    }
-
-    let mut cursor = action.await.map_err(mongo_error)?;
-    let mut documents = Vec::new();
-    let mut result_bytes = 0_usize;
-    while let Some(document) = cursor.try_next().await.map_err(mongo_error)? {
-        let document = bson_to_json(Bson::Document(document));
-        result_bytes = result_bytes.saturating_add(serde_json::to_vec(&document)?.len());
-        if result_bytes > MAX_RESULT_BYTES {
-            return Err(AppError::Validation(format!(
-                "El resultado MongoDB supera el límite de {} MiB",
-                MAX_RESULT_BYTES / 1024 / 1024
-            ))
-            .into());
+        let mut action = collection
+            .find(filter)
+            .limit(limit)
+            .max_time(MONGO_OPERATION_TIMEOUT);
+        if let Some(projection) = parse_optional_document(input.projection, "proyección")? {
+            action = action.projection(projection);
         }
-        documents.push(document);
-    }
-    let count = documents.len();
-    Ok(MongoFindOutput { documents, count })
+        if let Some(sort) = parse_optional_document(input.sort, "ordenación")? {
+            action = action.sort(sort);
+        }
+
+        let mut cursor = action.await.map_err(mongo_error)?;
+        let mut documents = Vec::new();
+        let mut result_bytes = 0_usize;
+        while let Some(document) = cursor.try_next().await.map_err(mongo_error)? {
+            let document = bson_to_json(Bson::Document(document));
+            result_bytes = result_bytes.saturating_add(serde_json::to_vec(&document)?.len());
+            if result_bytes > MAX_RESULT_BYTES {
+                return Err(AppError::Validation(format!(
+                    "El resultado MongoDB supera el límite de {} MiB",
+                    MAX_RESULT_BYTES / 1024 / 1024
+                ))
+                .into());
+            }
+            documents.push(document);
+        }
+        let count = documents.len();
+        Ok(MongoFindOutput { documents, count })
+    })
+    .await
 }
 
 #[tauri::command]
@@ -355,16 +406,19 @@ pub async fn insert_mongodb_document(
     validate_namespace(&input.collection, "colección")?;
     validate_collection_access(&input.database, &input.collection)?;
     let client = mongo_client(&state, &input.connection_id)?;
-    let document = parse_document(&input.document, "documento")?;
-    let result = client
-        .database(&input.database)
-        .collection::<Document>(&input.collection)
-        .insert_one(document)
-        .await
-        .map_err(mongo_error)?;
-    Ok(MongoInsertOutput {
-        inserted_id: bson_to_json(result.inserted_id),
+    with_mongo_deadline(async move {
+        let document = parse_document(&input.document, "documento")?;
+        let result = client
+            .database(&input.database)
+            .collection::<Document>(&input.collection)
+            .insert_one(document)
+            .await
+            .map_err(mongo_error)?;
+        Ok(MongoInsertOutput {
+            inserted_id: bson_to_json(result.inserted_id),
+        })
     })
+    .await
 }
 
 #[tauri::command]
@@ -376,23 +430,27 @@ pub async fn update_mongodb_document(
     validate_namespace(&input.collection, "colección")?;
     validate_collection_access(&input.database, &input.collection)?;
     let client = mongo_client(&state, &input.connection_id)?;
-    let filter = parse_document(&input.filter, "filtro")?;
-    let update = parse_document(&input.update, "actualización")?;
-    if filter.is_empty() {
-        return Err(
-            AppError::Validation("Una actualización requiere un filtro no vacío".into()).into(),
-        );
-    }
-    let result = client
-        .database(&input.database)
-        .collection::<Document>(&input.collection)
-        .update_one(filter, update)
-        .await
-        .map_err(mongo_error)?;
-    Ok(MongoUpdateOutput {
-        matched_count: result.matched_count,
-        modified_count: result.modified_count,
+    with_mongo_deadline(async move {
+        let filter = parse_document(&input.filter, "filtro")?;
+        let update = parse_document(&input.update, "actualización")?;
+        if filter.is_empty() {
+            return Err(AppError::Validation(
+                "Una actualización requiere un filtro no vacío".into(),
+            )
+            .into());
+        }
+        let result = client
+            .database(&input.database)
+            .collection::<Document>(&input.collection)
+            .update_one(filter, update)
+            .await
+            .map_err(mongo_error)?;
+        Ok(MongoUpdateOutput {
+            matched_count: result.matched_count,
+            modified_count: result.modified_count,
+        })
     })
+    .await
 }
 
 #[tauri::command]
@@ -404,19 +462,24 @@ pub async fn delete_mongodb_document(
     validate_namespace(&input.collection, "colección")?;
     validate_collection_access(&input.database, &input.collection)?;
     let client = mongo_client(&state, &input.connection_id)?;
-    let filter = parse_document(&input.filter, "filtro")?;
-    if filter.is_empty() {
-        return Err(AppError::Validation("Un borrado requiere un filtro no vacío".into()).into());
-    }
-    let result = client
-        .database(&input.database)
-        .collection::<Document>(&input.collection)
-        .delete_one(filter)
-        .await
-        .map_err(mongo_error)?;
-    Ok(MongoDeleteOutput {
-        deleted_count: result.deleted_count,
+    with_mongo_deadline(async move {
+        let filter = parse_document(&input.filter, "filtro")?;
+        if filter.is_empty() {
+            return Err(
+                AppError::Validation("Un borrado requiere un filtro no vacío".into()).into(),
+            );
+        }
+        let result = client
+            .database(&input.database)
+            .collection::<Document>(&input.collection)
+            .delete_one(filter)
+            .await
+            .map_err(mongo_error)?;
+        Ok(MongoDeleteOutput {
+            deleted_count: result.deleted_count,
+        })
     })
+    .await
 }
 
 fn mongo_client(state: &AppState, connection_id: &str) -> Result<Client, AppError> {
@@ -544,5 +607,34 @@ mod tests {
     fn identifies_the_protected_session_collection() {
         assert!(is_protected_collection("config", "system.sessions"));
         assert!(!is_protected_collection("app", "sessions"));
+    }
+
+    #[test]
+    fn a_timed_out_mongodb_operation_finishes_safely_and_retains_its_attempt_until_done() {
+        let attempts = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        tauri::async_runtime::block_on(async {
+            let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+            let (finish_tx, finish_rx) = tokio::sync::oneshot::channel();
+            let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+            let worker_attempts = attempts.clone();
+            let result = super::mongo_deadline_after(
+                async move {
+                    let attempt = super::acquire_connect_attempt(&worker_attempts)?;
+                    started_tx.send(()).unwrap();
+                    finish_rx.await.unwrap();
+                    drop(attempt);
+                    done_tx.send(()).unwrap();
+                    Ok::<_, crate::error::AppError>(())
+                },
+                std::time::Duration::from_millis(20),
+            )
+            .await;
+            assert!(result.unwrap_err().to_string().contains("tiempo de espera"));
+            started_rx.await.unwrap();
+            assert_eq!(attempts.load(std::sync::atomic::Ordering::Acquire), 1);
+            finish_tx.send(()).unwrap();
+            done_rx.await.unwrap();
+        });
+        assert_eq!(attempts.load(std::sync::atomic::Ordering::Acquire), 0);
     }
 }

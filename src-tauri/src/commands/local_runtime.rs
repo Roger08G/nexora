@@ -1,4 +1,26 @@
-use std::{net::TcpStream, process::Command, time::Duration};
+use std::{
+    net::TcpStream,
+    path::{Path, PathBuf},
+    process::Command,
+    time::Duration,
+};
+
+pub(crate) fn runtime_roots() -> Vec<PathBuf> {
+    let executable = std::env::current_exe().ok();
+    let local_app_data = std::env::var_os("LOCALAPPDATA").map(PathBuf::from);
+    runtime_roots_at(executable.as_deref(), local_app_data.as_deref())
+}
+
+fn runtime_roots_at(executable: Option<&Path>, local_app_data: Option<&Path>) -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    if let Some(directory) = executable.and_then(Path::parent) {
+        roots.push(directory.join("runtimes"));
+    }
+    if let Some(directory) = local_app_data {
+        roots.push(directory.join("Nexora/runtimes"));
+    }
+    roots
+}
 
 pub(crate) fn process_owns_loopback_port(process_id: u32, port: u16) -> bool {
     process_loopback_ports(process_id).contains(&port)
@@ -65,7 +87,13 @@ fn parse_netstat_ports(output: &str, process_id: u32) -> Vec<u16> {
             {
                 return None;
             }
-            columns.get(1)?.rsplit_once(':')?.1.parse::<u16>().ok()
+            let local = columns.get(1)?.parse::<std::net::SocketAddr>().ok()?;
+            let remote = columns.get(2)?.parse::<std::net::SocketAddr>().ok()?;
+            // Listening rows have an unspecified peer on every Windows locale.
+            // An outbound or wildcard-bound socket cannot establish ownership of
+            // the loopback database listener during recovery of a reused PID.
+            (local.ip().is_loopback() && remote.ip().is_unspecified() && remote.port() == 0)
+                .then_some(local.port())
         })
         .collect::<Vec<_>>();
     ports.sort_unstable();
@@ -75,7 +103,26 @@ fn parse_netstat_ports(output: &str, process_id: u32) -> Vec<u16> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_netstat_ports;
+    use super::{parse_netstat_ports, runtime_roots_at};
+
+    #[test]
+    fn resolves_portable_runtimes_from_the_executable_before_user_installations() {
+        let root = std::env::temp_dir().join("nexora-layout");
+        assert_eq!(
+            runtime_roots_at(
+                Some(&root.join("portable/nexora.exe")),
+                Some(&root.join("user"))
+            ),
+            vec![
+                root.join("portable/runtimes"),
+                root.join("user/Nexora/runtimes")
+            ]
+        );
+        assert_eq!(
+            runtime_roots_at(Some(&root.join("nexora.exe")), None),
+            vec![root.join("runtimes")]
+        );
+    }
 
     #[test]
     fn extracts_tcp_ports_owned_by_a_process_without_localized_state_names() {
@@ -84,6 +131,10 @@ mod tests {
   TCP    127.0.0.1:57815        0.0.0.0:0              LISTENING       21104
   TCP    127.0.0.1:57815        127.0.0.1:60100        ESTABLISHED     21104
   TCP    127.0.0.1:59847        0.0.0.0:0              ESCUCHANDO      19812
+  TCP    0.0.0.0:27017         0.0.0.0:0              LISTENING       21104
+  TCP    127.0.0.1:61000       127.0.0.1:27017        ESTABLISHED     21104
+  TCP    192.168.1.2:57816     0.0.0.0:0              LISTENING       21104
+  TCP    [::1]:57815          [::]:0                  LISTENING       21104
 "#;
         assert_eq!(parse_netstat_ports(output, 21104), vec![57815]);
         assert_eq!(parse_netstat_ports(output, 19812), vec![59847]);

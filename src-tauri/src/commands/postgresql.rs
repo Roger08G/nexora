@@ -1,4 +1,8 @@
-use std::{collections::BTreeMap, path::PathBuf, time::Instant};
+use std::{
+    collections::{BTreeMap, HashSet},
+    path::PathBuf,
+    time::Instant,
+};
 
 use futures_util::TryStreamExt;
 use serde::{Deserialize, Serialize};
@@ -399,15 +403,11 @@ async fn collect_query(
 
     while let Some(message) = messages.as_mut().try_next().await? {
         match message {
+            SimpleQueryMessage::RowDescription(description) => {
+                columns = unique_column_names(description.iter().map(|column| column.name()));
+                retained_bytes = columns.iter().map(String::len).sum();
+            }
             SimpleQueryMessage::Row(row) => {
-                if columns.is_empty() {
-                    columns = row
-                        .columns()
-                        .iter()
-                        .map(|column| column.name().to_owned())
-                        .collect();
-                    retained_bytes = columns.iter().map(String::len).sum();
-                }
                 if rows.len() < row_limit {
                     let mut value = Map::new();
                     for (index, column) in columns.iter().enumerate() {
@@ -435,6 +435,28 @@ async fn collect_query(
         }
     }
     Ok((affected_rows, columns, rows, truncated))
+}
+
+fn unique_column_names<'a>(names: impl Iterator<Item = &'a str>) -> Vec<String> {
+    let names = names.collect::<Vec<_>>();
+    let reserved = names.iter().copied().collect::<HashSet<_>>();
+    let mut used = HashSet::new();
+    names
+        .into_iter()
+        .map(|name| {
+            if used.insert(name.to_owned()) {
+                return name.to_owned();
+            }
+            let mut suffix = 2;
+            loop {
+                let candidate = format!("{name} ({suffix})");
+                if !reserved.contains(candidate.as_str()) && used.insert(candidate.clone()) {
+                    return candidate;
+                }
+                suffix += 1;
+            }
+        })
+        .collect()
 }
 
 fn postgres_text_value(value: Option<&str>, data_type: Option<&Type>) -> Value {
@@ -519,6 +541,14 @@ mod tests {
         assert_eq!(DEFAULT_ROW_LIMIT.clamp(1, MAX_ROW_LIMIT), DEFAULT_ROW_LIMIT);
         assert_eq!(0_usize.clamp(1, MAX_ROW_LIMIT), 1);
         assert_eq!(10_000_usize.clamp(1, MAX_ROW_LIMIT), MAX_ROW_LIMIT);
+    }
+
+    #[test]
+    fn duplicate_sql_labels_do_not_overwrite_other_result_columns() {
+        assert_eq!(
+            super::unique_column_names(["id", "id", "id (2)", "id"].into_iter()),
+            ["id", "id (3)", "id (2)", "id (4)"]
+        );
     }
 
     #[test]
