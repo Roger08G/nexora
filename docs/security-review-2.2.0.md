@@ -22,13 +22,20 @@ existentes; no se añaden importadores, workflows ni un motor de assertions.
 
 ## Rendimiento
 
+Los monitores importados, aunque incluyan `enabled: true`, requieren autorización explícita por
+sesión para programar tráfico. Pausar, cambiar o reabrir el proyecto revoca el permiso, también para
+lecturas de peticiones pendientes. Se comprueba con pruebas de generación de permisos y un contador
+HTTP real en WebView: apertura sin tráfico, ejecución manual, programación autorizada y revocación
+al pausar, clonar y reabrir. Las peticiones ya enviadas no se cancelan con esta acción.
+
 - La preparación del body de respuesta se memoiza y elimina el parseo duplicado durante renders
   no relacionados. El formateador limita la expansión y la profundidad sin alterar los tokens.
 - Cuando SQL alcanza el presupuesto de vista previa, deja de convertir y serializar las filas
   posteriores. Sigue consumiendo el resultado para completar correctamente la operación;
   no se presenta como cancelación ni como límite del tráfico del servidor.
 - Los guardados idénticos evitan serialización, reemplazo y sincronización a disco innecesarios.
-- Los monitores no programan nuevas ejecuciones durante la selección o el cierre del proyecto.
+- Los monitores no programan nuevas ejecuciones durante la selección o el cierre del proyecto;
+  el reloj de la interfaz tampoco se activa hasta autorizar la programación.
 
 ## Límites y entrega
 

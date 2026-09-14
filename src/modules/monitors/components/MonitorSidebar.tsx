@@ -9,6 +9,7 @@ type MonitorSidebarProps = {
     onSelect: (monitorId: string) => void;
     query: string;
     runtime: Record<string, MonitorRuntimeState>;
+    schedulingEnabled: boolean;
     selectedId: string | null;
     totalMonitors: number;
 };
@@ -21,6 +22,7 @@ export function MonitorSidebar({
     onSelect,
     query,
     runtime,
+    schedulingEnabled,
     selectedId,
     totalMonitors,
 }: MonitorSidebarProps) {
@@ -57,7 +59,7 @@ export function MonitorSidebar({
                         >
                             <span
                                 className="monitor-item__indicator"
-                                data-enabled={monitor.enabled}
+                                data-enabled={monitor.enabled && schedulingEnabled}
                                 data-status={state?.status ?? "idle"}
                             />
                             <span>

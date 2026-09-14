@@ -81,6 +81,28 @@ export async function removeProjectFixture(root: string) {
     }
 }
 
+export function createScheduledProjectFixture(root: string, name: string, probeKey: string) {
+    createProjectFixture(root, name);
+    writeRequest(root, {
+        collectionId: "general",
+        collectionName: "General",
+        id: "scheduled-probe",
+        method: "POST",
+        name: "Monitor imported POST",
+        url: `${E2E_API_URL}/monitor-probe?key=${encodeURIComponent(probeKey)}`,
+    });
+    writeJson(join(root, "monitors", "monitor-consent.json"), {
+        createdAtMs: 1,
+        enabled: true,
+        id: "monitor-consent",
+        intervalSeconds: 10,
+        name: "Monitor importado",
+        requestId: "scheduled-probe",
+        requestName: "Monitor imported POST",
+        updatedAtMs: 1,
+    });
+}
+
 export function readSavedRequest(root: string, folder: string, request: string) {
     return JSON.parse(
         readFileSync(join(root, "requests", folder, `${request}.json`), "utf8"),

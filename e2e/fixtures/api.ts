@@ -1,5 +1,6 @@
 const port = Number(process.argv[2]);
 const delayedResponses = new Map<string, () => void>();
+const monitorProbeCounts = new Map<string, number>();
 
 if (!Number.isInteger(port) || port < 1 || port > 65_535) {
     throw new Error("El puerto E2E no es válido");
@@ -20,6 +21,13 @@ const server = Bun.serve({
 
         if (url.pathname === "/health") {
             return Response.json({ ok: true, service: "nexora-e2e" }, { headers });
+        }
+
+        if (url.pathname === "/monitor-probe" && (method === "GET" || method === "POST")) {
+            const key = url.searchParams.get("key") ?? "default";
+            if (method === "POST")
+                monitorProbeCounts.set(key, (monitorProbeCounts.get(key) ?? 0) + 1);
+            return Response.json({ count: monitorProbeCounts.get(key) ?? 0 }, { headers });
         }
 
         if (url.pathname === "/delay-state") {

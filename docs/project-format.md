@@ -126,9 +126,10 @@ validación no sustituye la revisión de datos sensibles antes de un commit.
 
 `requestId` referencia una petición guardada. El intervalo permitido va de 10 a 86 400 segundos.
 Las marcas temporales son milisegundos Unix gestionados por Nexora; guardar un monitor sin cambios
-no actualiza su fecha ni reescribe el archivo. El ejemplo está desactivado para no ejecutar tráfico
-al abrirlo. Los monitores habilitados funcionan mientras la aplicación permanece abierta y utilizan
-las variables disponibles en esa sesión.
+no actualiza su fecha ni reescribe el archivo. `enabled` selecciona qué monitores participarán en la
+programación, pero no autoriza tráfico al abrir el proyecto. Cada apertura, clon o reapertura comienza
+en pausa y requiere pulsar **Iniciar programación**. Este permiso solo existe en memoria y no modifica
+el JSON. **Ejecutar ahora** es independiente; ambas modalidades usan las variables de esa sesión.
 
 Estos archivos describen peticiones reutilizables y monitores, no expectativas sobre el resultado.
 Nexora permite ejecutar pruebas manuales y repetir peticiones, pero no dispone de una suite de
@@ -140,7 +141,8 @@ fixtures o resultados esperados.
 1. Clona el repositorio de definiciones y abre su carpeta raíz en Nexora.
 2. Define tus variables en **Variables de sesión**: por ejemplo, `baseUrl` con la URL de la API que
    hayas iniciado y `token` con una credencial de prueba. Sus valores son de sesión y no viajan en Git.
-3. Ejecuta una petición, revisa status, headers, body y tiempos; activa los monitores que necesites.
+3. Ejecuta una petición y revisa status, headers, body y tiempos. Revisa las peticiones enlazadas
+   antes de pulsar **Iniciar programación** si necesitas ejecuciones periódicas.
 4. Si quieres datos locales, inicia MongoDB o PostgreSQL desde Nexora. Un clon de definiciones no
    incluye los datos originales: se inicializan motores locales nuevos. Para trasladar datos entre
    equipos, realiza una exportación/restauración independiente.

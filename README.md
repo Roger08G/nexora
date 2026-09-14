@@ -203,6 +203,9 @@ El historial conserva un máximo de 500 ejecuciones en `.nexora/runtime/`, que e
 registra método, ruta sin query ni credenciales, estado y métricas; no persiste variables de sesión,
 headers, cuerpos de petición ni cuerpos de respuesta. Los monitores ejecutan peticiones guardadas
 mientras Nexora permanece abierto y utilizan los valores de sesión que existan en ese momento.
+La programación comienza pausada en cada apertura: revisa las peticiones y pulsa **Iniciar
+programación** para autorizarla en esa sesión. Un monitor habilitado en Git no inicia tráfico por
+sí solo. **Ejecutar ahora** permite una ejecución manual sin activar la programación.
 
 ## MongoDB local administrado
 

@@ -1,7 +1,12 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { $, $$, browser, expect } from "@wdio/globals";
-import { createProjectFixture, E2E_API_URL, readSavedRequest } from "../support/fixture";
+import {
+    createProjectFixture,
+    createScheduledProjectFixture,
+    E2E_API_URL,
+    readSavedRequest,
+} from "../support/fixture";
 
 const projectRoot = requiredEnvironment("NEXORA_E2E_PROJECT_ROOT");
 
@@ -530,6 +535,22 @@ describe("Nexora en el WebView real de Tauri", () => {
         await dialog.$("input").setValue("Monitor WebView");
         await dialog.$("select").selectByVisibleText("GET · Health check");
         await clickButton("Crear monitor");
+        await browser.waitUntil(() =>
+            readdirSync(join(projectRoot, "monitors"))
+                .filter((file) => file.endsWith(".json"))
+                .some(
+                    (file) =>
+                        (
+                            JSON.parse(
+                                readFileSync(join(projectRoot, "monitors", file), "utf8"),
+                            ) as { name?: string }
+                        ).name === "Monitor WebView",
+                ),
+        );
+        // The empty workspace's h1 is replaced by an article after creation; re-query it.
+        await browser.waitUntil(
+            async () => (await $(".monitor-workspace h1").getText()) === "Monitor WebView",
+        );
         await expect($(".monitor-workspace h1")).toHaveText("Monitor WebView");
 
         await clickButton("Ejecutar ahora");
@@ -669,6 +690,71 @@ describe("Nexora en el WebView real de Tauri", () => {
         const artifacts = resolve("artifacts", "e2e");
         mkdirSync(artifacts, { recursive: true });
         await browser.saveScreenshot(join(artifacts, "nexora-2.0-shell.png"));
+    });
+
+    it("no programa monitores importados sin permiso y lo revoca al pausar, clonar o reabrir", async () => {
+        const importedRoot = join(projectRoot, "untrusted-monitors");
+        const clonedRoot = join(projectRoot, "untrusted-monitors-clone");
+        const probeKey = `scheduling-${Date.now()}`;
+        createScheduledProjectFixture(importedRoot, "Monitores sin autorización", probeKey);
+        createScheduledProjectFixture(clonedRoot, "Clon sin autorización", probeKey);
+        const monitorFile = join(importedRoot, "monitors", "monitor-consent.json");
+        const originalDefinition = readFileSync(monitorFile, "utf8");
+        const count = async () => {
+            const response = await fetch(`${E2E_API_URL}/monitor-probe?key=${probeKey}`);
+            return ((await response.json()) as { count: number }).count;
+        };
+        async function openFixture(root: string, name: string) {
+            await installIpcGate(null, root);
+            try {
+                await openProjectFromFooter();
+                await browser.waitUntil(async () => (await ipcGateState()).openProjectCalls === 1);
+                await $(".loading-screen").waitForExist({ reverse: true, timeout: 30_000 });
+                await expect($(".status-bar")).toHaveText(expect.stringContaining(name));
+                await openWorkspace("Monitores");
+            } finally {
+                await restoreIpcGate();
+            }
+        }
+        try {
+            await openFixture(importedRoot, "Monitores sin autorización");
+            await button("Iniciar programación").waitForDisplayed();
+            await browser.pause(11_000);
+            expect(await count()).toBe(0);
+            // Manual execution remains an explicit, independent action while scheduling is paused.
+            await clickButton("Ejecutar ahora");
+            await browser.waitUntil(async () => (await count()) === 1);
+            await button("Iniciar programación").waitForDisplayed();
+            await clickButton("Iniciar programación");
+            await browser.waitUntil(async () => (await count()) >= 2, { timeout: 16_000 });
+            await clickButton("Pausar programación");
+            const pausedCount = await count();
+            await browser.pause(11_000);
+            expect(await count()).toBe(pausedCount);
+            expect(readFileSync(monitorFile, "utf8")).toBe(originalDefinition);
+
+            await clickButton("Iniciar programación");
+            await openFixture(clonedRoot, "Clon sin autorización");
+            await button("Iniciar programación").waitForDisplayed();
+            await browser.pause(11_000);
+            expect(await count()).toBe(pausedCount);
+            await clickButton("Iniciar programación");
+            await openFixture(clonedRoot, "Clon sin autorización");
+            await button("Iniciar programación").waitForDisplayed();
+            await browser.pause(11_000);
+            expect(await count()).toBe(pausedCount);
+        } finally {
+            await installIpcGate(null, projectRoot);
+            try {
+                await openProjectFromFooter();
+                await expect($(".status-bar")).toHaveText(
+                    expect.stringContaining("Nexora WebView E2E"),
+                );
+                await $(".loading-screen").waitForExist({ reverse: true, timeout: 30_000 });
+            } finally {
+                await restoreIpcGate();
+            }
+        }
     });
 });
 

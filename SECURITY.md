@@ -90,6 +90,9 @@ Normalmente quedan fuera de alcance:
 - Sí conserva en Git `.nexora/project.json` y `.nexora/.gitignore`, junto con las definiciones de
   peticiones, carpetas y monitores. Consulta la [guía del formato de proyecto](docs/project-format.md).
 - Conserva los secretos en variables de sesión y nunca dentro de peticiones versionadas.
+- Revisa las peticiones de repositorios ajenos antes de ejecutarlas. Sus monitores no envían tráfico
+  automáticamente al abrirlos: **Iniciar programación** autoriza la sesión actual y **Pausar
+  programación** revoca nuevos envíos. Las peticiones ya enviadas pueden terminar.
 - Las redirecciones HTTP automáticas se limitan al mismo origen para evitar reenviar headers,
   parámetros o cuerpos sensibles a otro servidor. Las respuestas a otros orígenes se muestran
   como `3xx` para poder revisarlas.

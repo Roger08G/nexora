@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { FiActivity, FiTrash2 } from "react-icons/fi";
 import { toast } from "@/shared/services/toast";
 import { useAppSettings } from "@/app/providers/AppSettingsProvider";
@@ -20,6 +20,7 @@ import type { LocalMonitor, MonitorRuntimeState } from "@/modules/monitors/types
 import { ActionButton } from "@/shared/components/ui/ActionButton";
 import { getErrorMessage } from "@/shared/services/native";
 import { KeyedTaskQueue } from "@/shared/services/async-tasks";
+import { MonitorScheduleSession } from "@/modules/monitors/services/scheduling";
 
 export function MonitorsPage() {
     const { settings } = useAppSettings();
@@ -37,6 +38,8 @@ export function MonitorsPage() {
     const [saving, setSaving] = useState(false);
     const [deleteTarget, setDeleteTarget] = useState<LocalMonitor | null>(null);
     const [now, setNow] = useState(Date.now());
+    const [, refreshScheduling] = useState(0);
+    const scheduleSession = useRef(new MonitorScheduleSession());
     const requestsRef = useRef(requests);
     const valuesRef = useRef(values);
     const timeoutRef = useRef(settings.requestTimeoutMs);
@@ -47,13 +50,21 @@ export function MonitorsPage() {
     const mounted = useRef(true);
     const paused = busy || Boolean(projectLoad);
     const pausedRef = useRef(paused);
+    const schedulingEnabled = scheduleSession.current.isAllowed(project);
 
-    useEffect(() => {
+    useLayoutEffect(() => {
         pausedRef.current = paused;
     }, [paused]);
+    useLayoutEffect(() => {
+        scheduleSession.current.pause();
+        refreshScheduling((current) => current + 1);
+        return () => scheduleSession.current.pause();
+    }, [project]);
     useEffect(
         () =>
             registerBeforeProjectChange(async () => {
+                scheduleSession.current.pause();
+                refreshScheduling((current) => current + 1);
                 await monitorQueue.current.drain();
                 return true;
             }),
@@ -112,29 +123,35 @@ export function MonitorsPage() {
 
     const hasScheduledMonitors = monitors.some((monitor) => monitor.enabled);
     useEffect(() => {
-        if (!hasScheduledMonitors || paused) return;
+        if (!hasScheduledMonitors || paused || !schedulingEnabled) return;
         const timer = window.setInterval(() => setNow(Date.now()), 1_000);
         return () => window.clearInterval(timer);
-    }, [hasScheduledMonitors, paused]);
+    }, [hasScheduledMonitors, paused, schedulingEnabled]);
 
     const runMonitor = useCallback(
-        async (monitor: LocalMonitor, notify: boolean) => {
-            if (
-                !mounted.current ||
-                pausedRef.current ||
-                deletingIds.current.has(monitor.id) ||
-                runningIds.current.has(monitor.id)
-            )
-                return;
+        async (monitor: LocalMonitor, mode: "manual" | "scheduled") => {
+            const notify = mode === "manual";
+            const hasPermission = scheduleSession.current.capture(project);
+            const canRun = () =>
+                mounted.current &&
+                !pausedRef.current &&
+                !deletingIds.current.has(monitor.id) &&
+                (mode === "manual" ||
+                    (hasPermission() &&
+                        monitorsRef.current.some(
+                            (item) => item.id === monitor.id && item.enabled,
+                        )));
+            if (!canRun() || runningIds.current.has(monitor.id)) return;
             runningIds.current.add(monitor.id);
             setRuntimeState(monitor.id, { error: undefined, status: "running" });
             const variables = valuesRef.current;
             const timeout = timeoutRef.current;
             let runningRequest: SavedRequest | undefined;
+            let executionStarted = false;
             try {
                 if (!project) throw new Error("No hay un proyecto cargado.");
                 const currentRequests = await loadRequests(project.root);
-                if (!mounted.current || deletingIds.current.has(monitor.id)) return;
+                if (!canRun()) return;
                 setRequests(currentRequests);
                 requestsRef.current = currentRequests;
                 const request = currentRequests.find(
@@ -142,6 +159,7 @@ export function MonitorsPage() {
                 );
                 if (!request) throw new Error("La petición enlazada ya no existe.");
                 runningRequest = request;
+                executionStarted = true;
                 const response = await executeRequest(request, variables, timeout);
                 if (!mounted.current) return;
                 await record({ request, response, source: "monitor" });
@@ -192,14 +210,24 @@ export function MonitorsPage() {
                 if (notify) toast.error(`Error en ${monitor.name}`, { description: message });
             } finally {
                 runningIds.current.delete(monitor.id);
+                if (!executionStarted && mounted.current) {
+                    setRuntime((current) =>
+                        current[monitor.id]?.status === "running"
+                            ? {
+                                  ...current,
+                                  [monitor.id]: { ...current[monitor.id], status: "idle" },
+                              }
+                            : current,
+                    );
+                }
             }
         },
         [project, record],
     );
 
     useEffect(() => {
-        if (paused) return;
-        const activeMonitors = monitors.filter((monitor) => monitor.enabled);
+        const activeMonitors =
+            paused || !schedulingEnabled ? [] : monitors.filter((monitor) => monitor.enabled);
         const nextRuntime = Object.fromEntries(
             activeMonitors.map((monitor) => [
                 monitor.id,
@@ -213,7 +241,7 @@ export function MonitorsPage() {
             for (const monitor of monitors) {
                 next[monitor.id] = {
                     ...(current[monitor.id] ?? { runCount: 0, status: "idle" }),
-                    nextRunAt: monitor.enabled ? nextRuntime[monitor.id].nextRunAt : undefined,
+                    nextRunAt: nextRuntime[monitor.id]?.nextRunAt,
                 };
             }
             return next;
@@ -224,11 +252,27 @@ export function MonitorsPage() {
                 setRuntimeState(monitor.id, {
                     nextRunAt: Date.now() + monitor.intervalSeconds * 1_000,
                 });
-                void runMonitor(monitor, false);
+                void runMonitor(monitor, "scheduled");
             }, monitor.intervalSeconds * 1_000),
         );
         return () => timers.forEach((timer) => window.clearInterval(timer));
-    }, [monitors, paused, runMonitor]);
+    }, [monitors, paused, runMonitor, schedulingEnabled]);
+
+    function toggleScheduling() {
+        if (!project || paused || loading) return;
+        if (scheduleSession.current.isAllowed(project)) {
+            scheduleSession.current.pause();
+            toast.info("Programación pausada", {
+                description: "Las peticiones ya enviadas pueden terminar.",
+            });
+        } else {
+            scheduleSession.current.start(project);
+            toast.info("Programación iniciada", {
+                description: "Solo para esta sesión del proyecto.",
+            });
+        }
+        refreshScheduling((current) => current + 1);
+    }
 
     useEffect(() => {
         registerItems(
@@ -366,6 +410,7 @@ export function MonitorsPage() {
                 onSelect={setSelectedId}
                 query={query}
                 runtime={runtime}
+                schedulingEnabled={schedulingEnabled && !paused}
                 selectedId={selected?.id ?? null}
                 totalMonitors={monitors.length}
             />
@@ -373,10 +418,12 @@ export function MonitorsPage() {
                 monitor={selected}
                 now={now}
                 onDelete={() => selected && setDeleteTarget(selected)}
-                onRun={() => selected && void runMonitor(selected, true)}
+                onRun={() => selected && void runMonitor(selected, "manual")}
+                onToggleScheduling={toggleScheduling}
                 onUpdate={(changes) => void updateMonitor(changes)}
                 requests={requests}
                 runtime={selected ? runtime[selected.id] : undefined}
+                schedulingEnabled={schedulingEnabled && !paused}
             />
             {creating ? (
                 <MonitorCreateDialog
