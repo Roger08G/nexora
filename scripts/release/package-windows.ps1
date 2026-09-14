@@ -225,7 +225,7 @@ Extrae todo el ZIP en una carpeta con permisos de escritura y abre Nexora.exe.
 Conserva el directorio runtimes y las DLL junto al ejecutable: permiten usar
 MongoDB y PostgreSQL sin instalar servidores ni servicios de Windows.
 
-Requiere Windows 10/11 x64 y Microsoft Edge WebView2 Evergreen. Si falta WebView2:
+Requiere Windows 11 x64 para los motores incluidos y Microsoft Edge WebView2 Evergreen. Si falta WebView2:
 https://developer.microsoft.com/microsoft-edge/webview2/
 
 Selecciona o crea una carpeta de proyecto desde Nexora. Las peticiones y monitores

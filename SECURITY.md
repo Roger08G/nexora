@@ -79,7 +79,7 @@ Normalmente quedan fuera de alcance:
 ## Uso seguro
 
 - Descarga la distribución desde los releases del repositorio y compara los archivos con
-  `SHA256SUMS.txt`. Los ejecutables de `2.1.0` se distribuyen sin firma Authenticode.
+  `SHA256SUMS.txt`. Los ejecutables de `2.2.0` se distribuyen sin firma Authenticode.
 - La edición portable incluye motores y dependencias nativas. Las credenciales de las bases
   locales siguen ligadas a la cuenta de Windows que las creó: mover el proyecto a otro equipo
   requiere exportar/restaurar los datos o una migración de credenciales independiente.
@@ -87,6 +87,8 @@ Normalmente quedan fuera de alcance:
 - Descarga MongoDB y PostgreSQL únicamente de fuentes oficiales y utiliza distribuciones de
   confianza.
 - No publiques `.nexora/runtime`; contiene datos locales, logs y estado interno.
+- Sí conserva en Git `.nexora/project.json` y `.nexora/.gitignore`, junto con las definiciones de
+  peticiones, carpetas y monitores. Consulta la [guía del formato de proyecto](docs/project-format.md).
 - Conserva los secretos en variables de sesión y nunca dentro de peticiones versionadas.
 - Las redirecciones HTTP automáticas se limitan al mismo origen para evitar reenviar headers,
   parámetros o cuerpos sensibles a otro servidor. Las respuestas a otros orígenes se muestran
@@ -95,5 +97,29 @@ Normalmente quedan fuera de alcance:
 - Revisa las operaciones destructivas antes de confirmarlas y mantén copias de seguridad de los
   datos importantes.
 
-La revisión y los controles de la versión `2.0.0` están documentados en
-[docs/security-review-2.0.0.md](docs/security-review-2.0.0.md).
+## Integridad de proyectos en 2.2.0
+
+- El guardado de peticiones contrasta el archivo actual con la versión cargada. Un cambio externo
+  detectado o un archivo eliminado producen un conflicto en lugar de sobrescribirlo o recrearlo.
+  El borrador permanece en memoria; **Recargar** solo lo sustituye tras confirmación y lectura
+  correcta. No es un mecanismo de bloqueo frente a otros procesos ni una copia de seguridad.
+- Guardar peticiones y monitores sin cambios evita reescrituras y diferencias de formato
+  innecesarias. El cierre y el cambio de proyecto coordinan las escrituras pendientes y no ignoran
+  errores de guardado; con autosave desactivado se pide confirmar el descarte.
+- Antes de recuperar motores existentes, se verifica la carpeta de datos comunicada por MongoDB o
+  PostgreSQL contra la carpeta del proyecto. No se adopta un proceso solo por compartir PID, puerto
+  o credenciales.
+- Los enteros de 64 bits fuera del rango exacto de JavaScript se preservan como `$numberLong` en
+  MongoDB y como texto en resultados PostgreSQL `BIGINT`. Esta protección no garantiza precisión
+  arbitraria de números contenidos en JSON/JSONB.
+
+## Dependencia upstream pendiente
+
+En `2.2.0`, la cadena GTK de Tauri mantiene `glib 0.18.5`, afectado por
+[GHSA-wrw7-89jp-8q8g / RUSTSEC-2024-0429](https://rustsec.org/advisories/RUSTSEC-2024-0429.html).
+Esa dependencia no se compila en el destino Windows distribuido, pero permanece en el lockfile para
+Linux. La alerta no se considera corregida en esta versión. RustSec la clasifica como `unsound`:
+un control de auditoría que la trate como advertencia puede terminar correctamente sin resolverla.
+
+Consulta la [revisión de 2.2.0](docs/security-review-2.2.0.md) y la
+[revisión histórica de 2.0.0](docs/security-review-2.0.0.md) para conocer las correcciones y límites.

@@ -16,12 +16,12 @@
   <img src="https://img.shields.io/badge/Rust-stable-orange?logo=rust" alt="Rust">
   <img src="https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=20232A" alt="React">
   <img src="https://img.shields.io/badge/Tauri-2-24C8DB?logo=tauri&logoColor=white" alt="Tauri">
-  <img src="https://img.shields.io/badge/Windows-10%2F11-0078D4?logo=windows11&logoColor=white" alt="Windows">
+  <img src="https://img.shields.io/badge/Windows-11-0078D4?logo=windows11&logoColor=white" alt="Windows">
   <a href="LICENSE"><img src="https://img.shields.io/github/license/Roger08G/nexora" alt="Licencia"></a>
 </p>
 
 Nexora es una aplicación de desarrollo backend local-first que reúne un cliente de APIs REST, un
-workspace MongoDB y un workbench PostgreSQL. Cada proyecto mantiene sus pruebas y definiciones en
+workspace MongoDB y un workbench PostgreSQL. Cada proyecto mantiene sus definiciones de peticiones en
 archivos revisables con Git, mientras los datos, credenciales y runtimes permanecen exclusivamente
 en local.
 
@@ -37,8 +37,10 @@ La distribución está disponible en [Releases](https://github.com/Roger08G/nexo
   Prepara WebView2 si falta; ese primer paso puede necesitar conexión a Internet.
 - **Código fuente:** GitHub genera los archivos ZIP y TAR.GZ desde el tag de cada versión.
 
-Requiere Windows 10/11 x64 y Microsoft Edge WebView2. Compara las descargas con `SHA256SUMS.txt`
-antes de utilizarlas. La versión `2.1.0` se distribuye sin firma Authenticode.
+Para utilizar todos los motores incluidos, utiliza Windows 11 x64 y Microsoft Edge WebView2.
+Windows 10 no figura en las [plataformas soportadas de MongoDB](https://www.mongodb.com/docs/manual/installation/);
+no se garantiza el paquete completo en ese sistema. Compara las descargas con `SHA256SUMS.txt`
+antes de utilizarlas. La versión `2.2.0` se distribuye sin firma Authenticode.
 
 Puedes elegir cualquier carpeta para tus proyectos. El programa no instala servicios de bases de
 datos ni necesita una cuenta o un servidor en la nube. Los ajustes de interfaz y las credenciales
@@ -86,6 +88,8 @@ flowchart LR
 - Cliente REST con ejecución HTTP real, status, headers, body, duración y tamaño de respuesta.
 - Rutas, carpetas y monitores visibles en la raíz, con un JSON por recurso para obtener diffs claros en Git.
 - Carpetas persistentes, menú contextual para renombrar o eliminar rutas y guardado automático.
+- Detección de conflictos con cambios externos de peticiones y recarga confirmada desde el archivo.
+- Cierre y cambio de proyecto coordinados con las escrituras pendientes.
 - Pestañas de ruta cerrables con `Ctrl+W` sin permitir cerrar la última petición abierta.
 - Historial HTTP local con búsqueda, repetición y limpieza controlada.
 - Monitores locales configurables, ejecución manual o periódica y registro en el historial.
@@ -105,8 +109,15 @@ administrativo interno. MongoDB exige filtros no vacíos para editar o borrar, y
 solo viven durante la sesión. El núcleo limita tiempos, respuestas HTTP, filas SQL, documentos
 MongoDB y conexiones simultáneas para mantener estable la aplicación.
 
-Todavía no forman parte de esta versión los workflows API → diff de base de datos, la importación de
-cURL/OpenAPI/Postman ni la ejecución de monitores cuando Nexora está cerrado.
+Las peticiones permiten realizar pruebas manuales y los monitores repetirlas mientras Nexora está
+abierto. No constituyen una suite de assertions ejecutable desde CI. Todavía no forman parte de esta
+versión los workflows API → diff de base de datos, la importación de cURL/OpenAPI/Postman ni la
+ejecución de monitores cuando Nexora está cerrado.
+
+Los enteros MongoDB de 64 bits que exceden el rango exacto de JavaScript se representan mediante
+`$numberLong`. Los valores PostgreSQL `BIGINT` fuera de ese rango llegan como texto a la tabla y al
+CSV, evitando redondear identificadores. Esto no supone precisión arbitraria para números dentro de
+columnas JSON/JSONB.
 
 ## Tecnologías
 
@@ -154,18 +165,33 @@ mi-proyecto/
 │   └── runtime/          # datos de motores e historial local
 ├── folders/              # metadatos versionables de las carpetas
 │   └── general.json
-├── monitors/             # definiciones versionables, nunca incluyen secretos
+├── monitors/             # definiciones versionables, sin variables de sesión
 │   └── monitor-<uuid>.json
-└── requests/             # pruebas de API versionables
+└── requests/             # definiciones de peticiones versionables
     └── general/
         └── request-<uuid>.json
 ```
 
-Las carpetas `folders/`, `monitors/` y `requests/` se pueden versionar directamente y revisar sin
-depender de Nexora. `.nexora/` queda reservado para la comunicación con la aplicación y su estado
-local. Al abrir un proyecto creado con la versión 0.1, Nexora migra las definiciones ocultas al
+Versiona `.nexora/project.json`, `.nexora/.gitignore` y el contenido de `folders/`, `monitors/` y
+`requests/`. No ignores `.nexora/` por completo: el manifiesto permite abrir el proyecto después de
+clonarlo. Su subcarpeta `runtime/` sí debe permanecer fuera de Git. La
+[guía del formato de proyecto](docs/project-format.md) incluye ejemplos JSON y el flujo de clonación.
+
+Al abrir un proyecto creado con la versión 0.1, Nexora migra las definiciones ocultas al
 nuevo formato; si ya existe un archivo distinto en el destino, cancela la migración para evitar
 sobrescribir datos.
+
+El guardado compara la petición con la versión cargada desde disco. Si Git u otro editor la ha
+modificado o eliminado, Nexora señala el conflicto y conserva el borrador, sin reemplazar el archivo
+detectado ni recrearlo. **Recargar** pide confirmación antes de sustituir el borrador por el contenido
+actual del archivo; si la lectura falla, el borrador se conserva. No hay resolución automática de
+conflictos ni vigilancia continua de cambios de Git.
+
+Guardar una petición o un monitor sin cambios no reformatea su archivo ni genera diferencias
+innecesarias. Al cerrar Nexora o cambiar de proyecto, la aplicación espera las escrituras pendientes;
+si el guardado automático encuentra un error o conflicto, no completa la salida. Con guardado
+automático desactivado, pregunta antes de descartar cambios. Estas protecciones no sustituyen las
+copias de seguridad ni coordinan escrituras simultáneas de otros programas.
 
 Los archivos de petición guardan referencias como `Bearer {{token}}`, no el valor de `token`.
 Al ejecutar, Nexora resuelve variables en URL, nombres y valores de query y headers, y body. Las
@@ -192,6 +218,9 @@ aislados en `.nexora/runtime/mongodb`. Nexora crea una credencial distinta por p
 contraseña en Windows Credential Manager; no la escribe en Git ni la expone en la interfaz. Al
 desconectar o cerrar Nexora, el proceso administrado se detiene.
 
+Antes de recuperar un proceso MongoDB ya activo, Nexora comprueba que su carpeta de datos coincide
+con la del proyecto seleccionado; no adopta una instancia que utiliza otra carpeta.
+
 La variable `NEXORA_MONGOD_PATH` permite utilizar otro ejecutable durante desarrollo. Se conserva
 la detección del directorio legado `8.3.8` para instalaciones anteriores, pero los paquetes nuevos
 incluyen `8.3.11`. No se debe versionar `mongod.exe` dentro del repositorio.
@@ -215,6 +244,9 @@ En Windows, el arranque utiliza `pg_ctl` para crear un proceso con privilegios r
 si Nexora se ha abierto como administrador. Se comprueban el PID y el puerto local del servidor;
 no se desactiva UAC ni se registra un servicio de Windows.
 
+Para recuperar una instancia PostgreSQL existente, Nexora también contrasta `data_directory` con la
+carpeta de datos del proyecto. Coincidir en PID, puerto o credenciales no basta para adoptarla.
+
 El rol `nexora_admin` queda reservado para la inicialización y el mantenimiento interno. Las
 consultas de la interfaz utilizan `nexora_app`, sin privilegios de superusuario, creación de roles o
 bases de datos ni pertenencia al rol administrativo. Los clústeres creados por versiones alpha
@@ -229,15 +261,17 @@ debe apuntar a la carpeta que contiene `bin`, `lib` y `share`.
 
 ```bash
 bun run fmt:check
+bun run verify:version
+bun run test:version
 bun run audit:frontend
 bun run typecheck
 bun run typecheck:tests
 bun run test:unit
 bun run build
 cargo fmt --manifest-path src-tauri/Cargo.toml --check
-cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings
-cargo test --manifest-path src-tauri/Cargo.toml --all-targets
-cargo build --manifest-path src-tauri/Cargo.toml --release
+cargo clippy --manifest-path src-tauri/Cargo.toml --locked --all-targets --all-features -- -D warnings
+cargo test --manifest-path src-tauri/Cargo.toml --locked --all-targets
+cargo build --manifest-path src-tauri/Cargo.toml --locked --release
 cargo audit --file src-tauri/Cargo.lock
 ```
 
@@ -274,6 +308,10 @@ auditorías de Bun y RustSec, Clippy, tests Rust, compilación con la caracterí
 Tauri. También descarga motores oficiales con SHA-256 fijado y ejecuta pruebas reales de MongoDB,
 PostgreSQL y WebView. Las regresiones frontend y del extractor ZIP se ejecutan en Windows y Linux.
 Dependabot agrupa las actualizaciones menores y parches para facilitar su revisión.
+
+La comprobación de versión contrasta `package.json`, los manifiestos Tauri y Cargo, la entrada Nexora
+del lockfile y la inyección utilizada por la pantalla inicial. Se ejecuta también antes de iniciar
+Vite o compilar el frontend.
 
 La auditoría frontend verifica primero el parche local de `extract-zip` contra archivos ZIP con
 enlaces y entradas duplicadas, además de una extracción válida. Solo después acepta las dos

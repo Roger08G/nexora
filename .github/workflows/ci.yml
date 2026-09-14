@@ -42,6 +42,9 @@ jobs:
             - name: Check formatting
               run: bun run fmt:check
 
+            - name: Verify application version
+              run: bun run verify:version && bun run test:version
+
             - name: Audit frontend dependencies
               run: bun run audit:frontend
 
@@ -130,6 +133,12 @@ jobs:
 
             - name: Exercise real databases through Tauri IPC
               run: cargo test --manifest-path src-tauri/Cargo.toml --locked --test tauri_managed_e2e -- --ignored
+
+            - name: Verify runtime recovery isolation
+              run: cargo test --manifest-path src-tauri/Cargo.toml --locked --lib runs_ -- --ignored
+
+            - name: Verify legacy PostgreSQL migration
+              run: cargo test --manifest-path src-tauri/Cargo.toml --locked --lib migrates_the_legacy_superuser -- --ignored
 
             - name: Run native WebView regression suite
               run: bun run test:e2e
