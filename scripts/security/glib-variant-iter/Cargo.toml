@@ -1,0 +1,19 @@
+[package]
+name = "nexora-glib-security-regression"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.98"
+publish = false
+
+# Keep the regression lockfile and build outputs outside the unmodified vendor.
+[workspace]
+members = ["."]
+resolver = "2"
+
+[dependencies]
+glib = { path = "../../../src-tauri/vendor/glib-0.18.5" }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

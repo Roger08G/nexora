@@ -1,9 +1,18 @@
 [package]
 name = "nexora"
-version = "2.2.0"
+version = "2.2.1"
 description = "Local-first workspace for APIs and databases"
 authors = ["Roger Gómez Martínez"]
 edition = "2021"
+
+[workspace]
+members = ["."]
+exclude = ["vendor/glib-0.18.5"]
+resolver = "2"
+
+[patch.crates-io]
+# Backport of gtk-rs/gtk-rs-core#1343; provenance and integrity checks live in scripts/security.
+glib = { path = "vendor/glib-0.18.5" }
 
 [lib]
 # The `_lib` suffix may seem redundant but it is necessary

@@ -1,7 +1,7 @@
 {
     "name": "nexora",
     "private": true,
-    "version": "2.2.0",
+    "version": "2.2.1",
     "type": "module",
     "packageManager": "bun@1.3.14",
     "scripts": {
@@ -20,6 +20,8 @@
         "test:e2e": "bun run build:e2e:app && wdio run e2e/wdio.conf.ts",
         "test:e2e:run": "wdio run e2e/wdio.conf.ts",
         "verify:extract-zip": "bun scripts/security/verify-extract-zip-patch.mjs",
+        "verify:glib": "node scripts/security/verify-glib-patch.mjs",
+        "test:glib-guard": "node --test scripts/security/verify-glib-patch.test.mjs",
         "verify:version": "bun scripts/verify-version.mjs",
         "fmt": "prettier --write --config .prettierrc --ignore-path .prettierignore .prettierrc \"**/*.{json,md,mjs,js,ts,tsx,jsx}\"",
         "fmt:check": "prettier --check --config .prettierrc --ignore-path .prettierignore .prettierrc \"**/*.{json,md,mjs,js,ts,tsx,jsx}\""

@@ -7,3 +7,9 @@
 *.jpg binary
 *.png binary
 *.webp binary
+
+# Preserve the published GLib crate byte-for-byte except its documented backport.
+src-tauri/vendor/glib-0.18.5/** -text
+# Keep upstream license whitespace and required blank-context prefixes in the diff.
+src-tauri/vendor/glib-0.18.5/** -whitespace
+scripts/security/glib-variant-str-iter.patch -whitespace

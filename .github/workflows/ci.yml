@@ -36,11 +36,25 @@ jobs:
               with:
                   bun-version: "1.3.14"
 
+            - name: Set up Node.js for security verification
+              uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+              with:
+                  node-version: "24"
+
+            - name: Verify vendored GLib integrity without Cargo
+              run: node scripts/security/verify-glib-patch.mjs
+
+            - name: Test GLib integrity verifier
+              run: node --test scripts/security/verify-glib-patch.test.mjs
+
             - name: Install dependencies
               run: bun ci
 
             - name: Check formatting
               run: bun run fmt:check
+
+            - name: Verify vendored GLib after formatting checks
+              run: node scripts/security/verify-glib-patch.mjs
 
             - name: Verify application version
               run: bun run verify:version && bun run test:version
@@ -66,6 +80,10 @@ jobs:
 
             - name: Build frontend
               run: bun run build
+
+            - name: Verify vendored GLib after frontend checks
+              if: always()
+              run: node scripts/security/verify-glib-patch.mjs
 
     rust:
         name: Rust
@@ -106,11 +124,17 @@ jobs:
                   workspaces: src-tauri -> target
                   cache-on-failure: true
 
+            - name: Verify vendored GLib before native checks
+              run: node scripts/security/verify-glib-patch.mjs
+
             - name: Check Rust formatting
-              run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
+              run: cargo fmt --manifest-path src-tauri/Cargo.toml -p nexora --check
+
+            - name: Verify vendored GLib after Rust formatting checks
+              run: node scripts/security/verify-glib-patch.mjs
 
             - name: Lint Rust
-              run: cargo clippy --manifest-path src-tauri/Cargo.toml --locked --all-targets --all-features -- -D warnings
+              run: cargo clippy --manifest-path src-tauri/Cargo.toml -p nexora --locked --all-targets --all-features --no-deps -- -D warnings
 
             - name: Audit Rust dependencies
               uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998 # v2.0.0
@@ -146,6 +170,10 @@ jobs:
             - name: Build Tauri application
               run: bun run tauri build --no-bundle --ci -- --locked
 
+            - name: Verify vendored GLib after native checks
+              if: always()
+              run: node scripts/security/verify-glib-patch.mjs
+
             - name: Upload WebView diagnostics
               if: always()
               uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -154,3 +182,56 @@ jobs:
                   path: artifacts/e2e
                   if-no-files-found: ignore
                   retention-days: 7
+
+    glib-security:
+        name: GLib security regression (Linux)
+        runs-on: ubuntu-24.04
+        timeout-minutes: 30
+        env:
+            CARGO_TARGET_DIR: ${{ github.workspace }}/target/glib-security-regression
+
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+              with:
+                  persist-credentials: false
+
+            - name: Set up Node.js
+              uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+              with:
+                  node-version: "24"
+
+            - name: Install GLib development libraries
+              run: |
+                  sudo apt-get update
+                  sudo apt-get install --no-install-recommends --yes libglib2.0-dev pkg-config
+
+            - name: Set up Rust
+              uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+              with:
+                  toolchain: "1.98.0"
+                  components: clippy, rustfmt
+
+            - name: Verify vendored GLib integrity and effective Linux dependency graphs
+              run: node scripts/security/verify-glib-patch.mjs --metadata
+
+            - name: Test GLib integrity verifier
+              run: node --test scripts/security/verify-glib-patch.test.mjs
+
+            - name: Check application and regression harness formatting
+              run: |
+                  cargo fmt --manifest-path src-tauri/Cargo.toml -p nexora --check
+                  cargo fmt --manifest-path scripts/security/glib-variant-iter/Cargo.toml -p nexora-glib-security-regression --check
+
+            - name: Verify vendored GLib after formatting checks
+              run: node scripts/security/verify-glib-patch.mjs --metadata
+
+            - name: Lint regression harness without third-party dependencies
+              run: cargo clippy --manifest-path scripts/security/glib-variant-iter/Cargo.toml -p nexora-glib-security-regression --locked --release --all-targets --no-deps -- -D warnings
+
+            - name: Exercise patched iterators in release mode
+              run: cargo test --manifest-path scripts/security/glib-variant-iter/Cargo.toml -p nexora-glib-security-regression --locked --release --all-targets
+
+            - name: Verify vendored GLib after release regression tests
+              if: always()
+              run: node scripts/security/verify-glib-patch.mjs --metadata

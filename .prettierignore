@@ -13,3 +13,6 @@ src-tauri/target
 src-tauri/gen/
 target/
 gen/
+
+# Third-party source: checked against the published crate by verify-glib-patch.
+src-tauri/vendor/

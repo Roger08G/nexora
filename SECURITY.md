@@ -79,7 +79,7 @@ Normalmente quedan fuera de alcance:
 ## Uso seguro
 
 - Descarga la distribución desde los releases del repositorio y compara los archivos con
-  `SHA256SUMS.txt`. Los ejecutables de `2.2.0` se distribuyen sin firma Authenticode.
+  `SHA256SUMS.txt`. Los ejecutables de `2.2.1` se distribuyen sin firma Authenticode.
 - La edición portable incluye motores y dependencias nativas. Las credenciales de las bases
   locales siguen ligadas a la cuenta de Windows que las creó: mover el proyecto a otro equipo
   requiere exportar/restaurar los datos o una migración de credenciales independiente.
@@ -116,13 +116,19 @@ Normalmente quedan fuera de alcance:
   MongoDB y como texto en resultados PostgreSQL `BIGINT`. Esta protección no garantiza precisión
   arbitraria de números contenidos en JSON/JSONB.
 
-## Dependencia upstream pendiente
+## Corrección de GLib en 2.2.1
 
-En `2.2.0`, la cadena GTK de Tauri mantiene `glib 0.18.5`, afectado por
+La cadena GTK de Tauri utiliza `glib 0.18.5`, cuya publicación original está afectada por
 [GHSA-wrw7-89jp-8q8g / RUSTSEC-2024-0429](https://rustsec.org/advisories/RUSTSEC-2024-0429.html).
-Esa dependencia no se compila en el destino Windows distribuido, pero permanece en el lockfile para
-Linux. La alerta no se considera corregida en esta versión. RustSec la clasifica como `unsound`:
-un control de auditoría que la trate como advertencia puede terminar correctamente sin resolverla.
+Desde `2.2.1`, Nexora resuelve una copia local con el backport exacto de la corrección oficial de
+`VariantStrIter`. Se conserva la versión upstream y su licencia; no se simula una actualización
+incompatible de GTK ni se modifica una copia del registro global de Cargo.
+
+CI verifica bytes, parche y resolución efectiva, y ejecuta regresiones optimizadas del iterador
+en Linux. La desaparición de una alerta basada en versiones al usar una dependencia local no
+constituye por sí sola evidencia de corrección: las pruebas y la procedencia están documentadas en
+la [revisión de 2.2.1](docs/security-review-2.2.1.md). El binario Windows no compila GLib.
+Las publicaciones `2.2.0` y anteriores permanecen inmutables; utiliza la versión más reciente.
 
 Consulta la [revisión de 2.2.0](docs/security-review-2.2.0.md) y la
 [revisión histórica de 2.0.0](docs/security-review-2.0.0.md) para conocer las correcciones y límites.

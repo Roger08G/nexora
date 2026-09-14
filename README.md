@@ -40,7 +40,7 @@ La distribución está disponible en [Releases](https://github.com/Roger08G/nexo
 Para utilizar todos los motores incluidos, utiliza Windows 11 x64 y Microsoft Edge WebView2.
 Windows 10 no figura en las [plataformas soportadas de MongoDB](https://www.mongodb.com/docs/manual/installation/);
 no se garantiza el paquete completo en ese sistema. Compara las descargas con `SHA256SUMS.txt`
-antes de utilizarlas. La versión `2.2.0` se distribuye sin firma Authenticode.
+antes de utilizarlas. La versión `2.2.1` se distribuye sin firma Authenticode.
 
 Puedes elegir cualquier carpeta para tus proyectos. El programa no instala servicios de bases de
 datos ni necesita una cuenta o un servidor en la nube. Los ajustes de interfaz y las credenciales
@@ -267,12 +267,14 @@ bun run fmt:check
 bun run verify:version
 bun run test:version
 bun run audit:frontend
+bun run verify:glib
+bun run test:glib-guard
 bun run typecheck
 bun run typecheck:tests
 bun run test:unit
 bun run build
-cargo fmt --manifest-path src-tauri/Cargo.toml --check
-cargo clippy --manifest-path src-tauri/Cargo.toml --locked --all-targets --all-features -- -D warnings
+cargo fmt --manifest-path src-tauri/Cargo.toml -p nexora --check
+cargo clippy --manifest-path src-tauri/Cargo.toml --locked -p nexora --all-targets --all-features --no-deps -- -D warnings
 cargo test --manifest-path src-tauri/Cargo.toml --locked --all-targets
 cargo build --manifest-path src-tauri/Cargo.toml --locked --release
 cargo audit --file src-tauri/Cargo.lock
@@ -311,6 +313,19 @@ auditorías de Bun y RustSec, Clippy, tests Rust, compilación con la caracterí
 Tauri. También descarga motores oficiales con SHA-256 fijado y ejecuta pruebas reales de MongoDB,
 PostgreSQL y WebView. Las regresiones frontend y del extractor ZIP se ejecutan en Windows y Linux.
 Dependabot agrupa las actualizaciones menores y parches para facilitar su revisión.
+
+En Linux, CI comprueba además el backport oficial de seguridad de `glib 0.18.5`, la integridad de
+su código y que Nexora y las regresiones resuelven exactamente esa misma copia local. Ejecuta los
+iteradores afectados en modo optimizado con GLib real. No equivale a certificar la aplicación de
+escritorio completa en Linux. Consulta la [revisión de seguridad de 2.2.1](docs/security-review-2.2.1.md).
+
+```bash
+node scripts/security/verify-glib-patch.mjs --metadata
+cargo test --manifest-path scripts/security/glib-variant-iter/Cargo.toml --locked --release
+```
+
+La prueba nativa requiere `pkg-config` y `libglib2.0-dev` en Linux. No reformatees las dependencias
+vendorizadas: usa los comandos de formato por paquete indicados arriba, no `cargo fmt --all`.
 
 La comprobación de versión contrasta `package.json`, los manifiestos Tauri y Cargo, la entrada Nexora
 del lockfile y la inyección utilizada por la pantalla inicial. Se ejecuta también antes de iniciar
