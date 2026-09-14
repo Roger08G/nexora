@@ -20,6 +20,7 @@ use crate::{
 
 const DEFAULT_ROW_LIMIT: usize = 500;
 const MAX_ROW_LIMIT: usize = 1_000;
+const MAX_SAFE_JSON_INTEGER: i64 = 9_007_199_254_740_991;
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -408,7 +409,10 @@ async fn collect_query(
                 retained_bytes = columns.iter().map(String::len).sum();
             }
             SimpleQueryMessage::Row(row) => {
-                if rows.len() < row_limit {
+                // Once the byte budget is exhausted, keep a contiguous preview
+                // instead of repeatedly allocating later rows or skipping the
+                // oversized row and displaying a misleading tail of the result.
+                if rows.len() < row_limit && !truncated {
                     let mut value = Map::new();
                     for (index, column) in columns.iter().enumerate() {
                         value.insert(
@@ -467,7 +471,15 @@ fn postgres_text_value(value: Option<&str>, data_type: Option<&Type>) -> Value {
         Some(&Type::BOOL) => Value::Bool(value == "t"),
         Some(&Type::INT2 | &Type::INT4 | &Type::INT8 | &Type::OID) => value
             .parse::<i64>()
-            .map(Value::from)
+            .map(|integer| {
+                if (-MAX_SAFE_JSON_INTEGER..=MAX_SAFE_JSON_INTEGER).contains(&integer) {
+                    Value::from(integer)
+                } else {
+                    // Tauri serializes through JSON: preserve BIGINT IDs as text
+                    // rather than silently rounding them in JavaScript/CSV.
+                    Value::String(value.into())
+                }
+            })
             .unwrap_or_else(|_| Value::String(value.into())),
         Some(&Type::FLOAT4 | &Type::FLOAT8) => value
             .parse::<f64>()
@@ -549,6 +561,35 @@ mod tests {
             super::unique_column_names(["id", "id", "id (2)", "id"].into_iter()),
             ["id", "id (3)", "id (2)", "id (4)"]
         );
+    }
+
+    #[test]
+    fn preserves_bigint_values_outside_the_webview_safe_integer_range() {
+        for integer in [
+            i64::MIN,
+            -9_007_199_254_740_993,
+            9_007_199_254_740_993,
+            i64::MAX,
+        ] {
+            let text = integer.to_string();
+            assert_eq!(
+                super::postgres_text_value(Some(&text), Some(&tokio_postgres::types::Type::INT8)),
+                serde_json::Value::String(text),
+            );
+        }
+        for integer in [
+            -super::MAX_SAFE_JSON_INTEGER,
+            42,
+            super::MAX_SAFE_JSON_INTEGER,
+        ] {
+            assert_eq!(
+                super::postgres_text_value(
+                    Some(&integer.to_string()),
+                    Some(&tokio_postgres::types::Type::INT8)
+                ),
+                serde_json::json!(integer),
+            );
+        }
     }
 
     #[test]

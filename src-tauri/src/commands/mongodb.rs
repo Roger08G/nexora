@@ -26,6 +26,7 @@ const MAX_INDEXES: usize = 1_000;
 const MONGO_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const MONGO_OPERATION_TIMEOUT: Duration = Duration::from_secs(30);
 const MONGO_MAX_POOL_SIZE: u32 = 10;
+const MAX_SAFE_JSON_INTEGER: i64 = 9_007_199_254_740_991;
 
 static MONGO_OPERATIONS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(16);
 
@@ -585,7 +586,24 @@ fn mongo_error(error: mongodb::error::Error) -> AppError {
 }
 
 fn bson_to_json(value: Bson) -> Value {
-    value.into_relaxed_extjson()
+    match value {
+        Bson::Int64(integer)
+            if !(-MAX_SAFE_JSON_INTEGER..=MAX_SAFE_JSON_INTEGER).contains(&integer) =>
+        {
+            // JSON numbers become JavaScript doubles in the WebView. Canonical
+            // Extended JSON keeps large IDs exact and can be submitted unchanged
+            // to the document editor/filter parser without changing their type.
+            Bson::Int64(integer).into_canonical_extjson()
+        }
+        Bson::Document(document) => Value::Object(
+            document
+                .into_iter()
+                .map(|(key, value)| (key, bson_to_json(value)))
+                .collect(),
+        ),
+        Bson::Array(values) => Value::Array(values.into_iter().map(bson_to_json).collect()),
+        other => other.into_relaxed_extjson(),
+    }
 }
 
 fn empty_document() -> String {
@@ -607,6 +625,43 @@ mod tests {
     fn identifies_the_protected_session_collection() {
         assert!(is_protected_collection("config", "system.sessions"));
         assert!(!is_protected_collection("app", "sessions"));
+    }
+
+    #[test]
+    fn large_int64_values_round_trip_through_extended_json_without_precision_loss() {
+        let original = mongodb::bson::doc! {
+            "_id": i64::MAX,
+            "nested": { "minimum": i64::MIN },
+            "values": [9_007_199_254_740_993_i64, 42_i64],
+        };
+        let rendered = super::bson_to_json(mongodb::bson::Bson::Document(original.clone()));
+        assert_eq!(rendered["_id"]["$numberLong"], i64::MAX.to_string());
+        assert_eq!(
+            rendered["nested"]["minimum"]["$numberLong"],
+            i64::MIN.to_string()
+        );
+        assert_eq!(rendered["values"][0]["$numberLong"], "9007199254740993");
+        assert_eq!(rendered["values"][1], 42);
+        let reparsed = parse_document(&rendered.to_string(), "documento").unwrap();
+        assert_eq!(reparsed.get_i64("_id").unwrap(), i64::MAX);
+        assert_eq!(
+            reparsed
+                .get_document("nested")
+                .unwrap()
+                .get_i64("minimum")
+                .unwrap(),
+            i64::MIN
+        );
+        assert_eq!(
+            reparsed.get_array("values").unwrap()[0],
+            mongodb::bson::Bson::Int64(9_007_199_254_740_993)
+        );
+        for integer in [-super::MAX_SAFE_JSON_INTEGER, super::MAX_SAFE_JSON_INTEGER] {
+            assert_eq!(
+                super::bson_to_json(mongodb::bson::Bson::Int64(integer)),
+                serde_json::json!(integer)
+            );
+        }
     }
 
     #[test]

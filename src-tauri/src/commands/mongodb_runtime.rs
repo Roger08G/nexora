@@ -15,7 +15,8 @@ use uuid::Uuid;
 use crate::{
     commands::{
         local_runtime::{
-            process_loopback_ports, process_owns_loopback_port, runtime_roots, wait_for_closed_port,
+            ensure_same_data_directory, process_loopback_ports, process_owns_loopback_port,
+            runtime_roots, wait_for_closed_port,
         },
         projects::project_runtime_context,
     },
@@ -272,6 +273,21 @@ async fn recover_existing_mongod(
         {
             continue;
         }
+        // Copied projects share their UUID/keyring credential and can contain a
+        // stale lock pointing to the original server. Authentication alone does
+        // not establish that this process belongs to the requested data folder.
+        let startup = client
+            .database("admin")
+            .run_command(doc! { "getCmdLineOpts": 1 })
+            .await?;
+        let reported_path = startup
+            .get_document("parsed")
+            .and_then(|parsed| parsed.get_document("storage"))
+            .and_then(|storage| storage.get_str("dbPath"))
+            .map_err(|_| {
+                AppError::Conflict("No se pudo comprobar la carpeta del MongoDB activo".into())
+            })?;
+        ensure_same_data_directory(data_path, reported_path, "MongoDB")?;
         let mut databases = client.list_database_names().await.map_err(AppError::from)?;
         databases.sort_by_key(|name| name.to_lowercase());
         return Ok(Some((
@@ -628,6 +644,24 @@ mod tests {
             root.to_str().unwrap(),
         ))
         .expect("first managed MongoDB start");
+        let copied_data = root.join("copy/.nexora/runtime/mongodb/data");
+        fs::create_dir_all(&copied_data).unwrap();
+        fs::copy(
+            std::path::Path::new(&first_connection.data_path).join("mongod.lock"),
+            copied_data.join("mongod.lock"),
+        )
+        .unwrap();
+        let copied_recovery = tauri::async_runtime::block_on(super::recover_existing_mongod(
+            &root.join("copy"),
+            &copied_data,
+            &first_connection.version,
+            &super::project_password(&project_id, true).unwrap(),
+        ));
+        assert!(
+            matches!(copied_recovery, Err(AppError::Conflict(_))),
+            "a copied lock and the same project credential must not adopt the original database"
+        );
+        assert!(TcpStream::connect(("127.0.0.1", first_connection.port)).is_ok());
         let orphan = first_state
             .managed_mongo
             .lock()

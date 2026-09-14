@@ -164,6 +164,32 @@ fn managed_mongodb_crud_runs_end_to_end_through_tauri_ipc() {
         }),
     );
     assert_eq!(deleted["deletedCount"], 1);
+    let precise_id = json!({ "$numberLong": "9223372036854775807" });
+    let precise_filter = json!({ "_id": precise_id }).to_string();
+    let inserted = app.ok(
+        "insert_mongodb_document",
+        json!({ "input": {
+            "collection": "users", "connectionId": connection_id, "database": "nexora_ipc_e2e",
+            "document": json!({ "_id": precise_id, "name": "Exact integer" }).to_string()
+        }}),
+    );
+    assert_eq!(inserted["insertedId"], precise_id);
+    let precise = app.ok(
+        "find_mongodb",
+        json!({ "input": {
+            "collection": "users", "connectionId": connection_id, "database": "nexora_ipc_e2e",
+            "filter": precise_filter, "limit": 20, "projection": null, "sort": null
+        }}),
+    );
+    assert_eq!(precise["documents"][0]["_id"], precise_id);
+    let removed = app.ok(
+        "delete_mongodb_document",
+        json!({ "input": {
+            "collection": "users", "connectionId": connection_id, "database": "nexora_ipc_e2e",
+            "filter": precise_filter
+        }}),
+    );
+    assert_eq!(removed["deletedCount"], 1);
     app.ok("stop_managed_mongodb", json!({}));
     assert_eq!(app.ok("managed_mongodb_status", json!({}))["active"], false);
 }
@@ -261,6 +287,26 @@ fn managed_postgresql_crud_runs_end_to_end_through_tauri_ipc() {
         duplicate["rows"][0],
         json!({ "id": 1, "id (3)": 2, "id (2)": 3 })
     );
+    let integers = execute(
+        "SELECT 9223372036854775807::bigint AS maximum, '-9223372036854775808'::bigint AS minimum, \
+         9007199254740993::bigint AS unsafe_integer, 42::bigint AS safe_integer",
+        false,
+    );
+    assert_eq!(integers["rows"][0]["maximum"], "9223372036854775807");
+    assert_eq!(integers["rows"][0]["minimum"], "-9223372036854775808");
+    assert_eq!(integers["rows"][0]["unsafe_integer"], "9007199254740993");
+    assert_eq!(integers["rows"][0]["safe_integer"], 42);
+    let preview = execute(
+        "SELECT payload FROM (VALUES (1, repeat('x', 16777216)), (2, 'after-size-limit')) \
+         AS sample(ordinal, payload) ORDER BY ordinal",
+        false,
+    );
+    assert_eq!(preview["truncated"], true);
+    assert_eq!(
+        preview["rows"],
+        json!([]),
+        "a truncated preview must not skip the first row and display later rows"
+    );
     assert_eq!(selected["rows"].as_array().unwrap().len(), 2);
     assert_eq!(selected["rows"][0]["active"], true);
 
@@ -289,6 +335,16 @@ fn managed_postgresql_crud_runs_end_to_end_through_tauri_ipc() {
     assert!(std::fs::read_to_string(csv_path)
         .unwrap()
         .contains("Nexora"));
+    let precise_csv_path = project.path().join("integers.csv");
+    app.ok(
+        "export_postgresql_csv",
+        json!({ "input": {
+            "columns": integers["columns"], "path": precise_csv_path.to_string_lossy(), "rows": integers["rows"]
+        }}),
+    );
+    assert!(std::fs::read_to_string(precise_csv_path)
+        .unwrap()
+        .contains("9007199254740993"));
     assert_eq!(
         execute("DELETE FROM users WHERE id = 2", true)["affectedRows"],
         1

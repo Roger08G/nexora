@@ -5,6 +5,27 @@ use std::{
     time::Duration,
 };
 
+use crate::error::AppError;
+
+pub(crate) fn ensure_same_data_directory(
+    expected: &Path,
+    reported: &str,
+    engine: &str,
+) -> Result<(), AppError> {
+    let mismatch = || {
+        AppError::Conflict(format!(
+            "El proceso {engine} activo usa otra carpeta; Nexora no lo adoptará"
+        ))
+    };
+    let reported = Path::new(reported);
+    if !reported.is_absolute()
+        || expected.canonicalize()? != reported.canonicalize().map_err(|_| mismatch())?
+    {
+        return Err(mismatch());
+    }
+    Ok(())
+}
+
 pub(crate) fn runtime_roots() -> Vec<PathBuf> {
     let executable = std::env::current_exe().ok();
     let local_app_data = std::env::var_os("LOCALAPPDATA").map(PathBuf::from);
@@ -104,6 +125,27 @@ fn parse_netstat_ports(output: &str, process_id: u32) -> Vec<u16> {
 #[cfg(test)]
 mod tests {
     use super::{parse_netstat_ports, runtime_roots_at};
+
+    #[test]
+    fn recovery_requires_the_same_physical_data_directory() {
+        let root =
+            std::env::temp_dir().join(format!("nexora-runtime-identity-{}", uuid::Uuid::new_v4()));
+        let original = root.join("original");
+        let copied = root.join("copy");
+        std::fs::create_dir_all(&original).unwrap();
+        std::fs::create_dir_all(&copied).unwrap();
+        assert!(super::ensure_same_data_directory(
+            &original,
+            original.join("..").join("original").to_str().unwrap(),
+            "test",
+        )
+        .is_ok());
+        assert!(
+            super::ensure_same_data_directory(&copied, original.to_str().unwrap(), "test").is_err()
+        );
+        assert!(super::ensure_same_data_directory(&original, "original", "test").is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn resolves_portable_runtimes_from_the_executable_before_user_installations() {

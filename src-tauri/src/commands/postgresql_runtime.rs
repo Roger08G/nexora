@@ -16,7 +16,10 @@ use uuid::Uuid;
 
 use crate::{
     commands::{
-        local_runtime::{process_owns_loopback_port, runtime_roots, wait_for_closed_port},
+        local_runtime::{
+            ensure_same_data_directory, process_owns_loopback_port, runtime_roots,
+            wait_for_closed_port,
+        },
         projects::project_runtime_context,
     },
     error::{AppError, CommandResult},
@@ -249,6 +252,9 @@ async fn recover_existing_postgres(
     if !process_owns_loopback_port(process_id, port) {
         return Ok(None);
     }
+    // Check the running server before role/database repair can mutate it. A
+    // copied postmaster.pid plus the shared project credential is not ownership.
+    verify_existing_data_directory(port, password, data_path).await?;
     ensure_managed_database(port, password).await.map_err(|_| {
         AppError::Credential(
             "PostgreSQL ya está activo, pero Nexora no pudo recuperar su sesión local".into(),
@@ -279,6 +285,26 @@ async fn recover_existing_postgres(
         project_root: project_root.to_owned(),
         version: distribution.version.clone(),
     }))
+}
+
+async fn verify_existing_data_directory(
+    port: u16,
+    password: &str,
+    data_path: &Path,
+) -> Result<(), AppError> {
+    for username in [MANAGED_ADMIN_USERNAME, LEGACY_ADMIN_USERNAME] {
+        let Ok(client) = connect_client_as(port, password, "postgres", username).await else {
+            continue;
+        };
+        let Ok(row) = client.query_one("SHOW data_directory", &[]).await else {
+            continue;
+        };
+        let reported: &str = row.get(0);
+        return ensure_same_data_directory(data_path, reported, "PostgreSQL");
+    }
+    Err(AppError::Credential(
+        "No se pudo comprobar la carpeta del PostgreSQL activo".into(),
+    ))
 }
 
 fn postmaster_process(data_path: &Path) -> Option<(u32, u16)> {
@@ -1354,6 +1380,23 @@ mod tests {
             root.to_str().unwrap(),
         ))
         .expect("first managed PostgreSQL start");
+        let copied_data = root.join("copy/.nexora/runtime/postgresql/data");
+        fs::create_dir_all(&copied_data).unwrap();
+        fs::copy(
+            std::path::Path::new(&first_connection.data_path).join("postmaster.pid"),
+            copied_data.join("postmaster.pid"),
+        )
+        .unwrap();
+        let copied_recovery = tauri::async_runtime::block_on(super::recover_existing_postgres(
+            &find_postgresql_distribution().unwrap(),
+            &root.join("copy"),
+            &project_id,
+            &copied_data,
+            &project_password(&project_id, true).unwrap(),
+        ));
+        assert!(matches!(copied_recovery, Err(AppError::Conflict(_))),
+            "a copied PID file and the same project credential must not adopt the original database");
+        assert!(TcpStream::connect(("127.0.0.1", first_connection.port)).is_ok());
         let orphan = first_state
             .managed_postgres
             .lock()
