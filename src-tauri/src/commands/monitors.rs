@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 
 use crate::{
-    commands::projects::{project_runtime_context, validate_resource_filename},
+    commands::projects::{project_runtime_context, validate_resource_filename, validate_slug},
     error::{AppError, CommandResult},
     limits::{MAX_MONITORS, MAX_SMALL_FILE_BYTES},
     state::AppState,
@@ -18,8 +18,8 @@ use crate::{
 const MIN_INTERVAL_SECONDS: u64 = 10;
 const MAX_INTERVAL_SECONDS: u64 = 86_400;
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LocalMonitor {
     id: String,
     name: String,
@@ -118,6 +118,13 @@ fn save_monitor_sync(
     let path = monitor_path(project_root, &monitor.id)?;
     monitor.created_at_ms = if path.is_file() {
         let existing: LocalMonitor = read_json(&path, MAX_SMALL_FILE_BYTES, "El monitor local")?;
+        validate_resource_filename(&path, &existing.id)?;
+        monitor.created_at_ms = existing.created_at_ms;
+        monitor.updated_at_ms = existing.updated_at_ms;
+        if monitor == existing {
+            validate_monitor(&monitor)?;
+            return Ok(existing);
+        }
         existing.created_at_ms
     } else {
         if list_monitors_sync(project_root)?.len() >= MAX_MONITORS {
@@ -177,18 +184,7 @@ fn validate_monitor(monitor: &LocalMonitor) -> Result<(), AppError> {
 }
 
 fn validate_id(label: &str, id: &str) -> Result<(), AppError> {
-    let valid = !id.is_empty()
-        && id.len() <= 80
-        && id
-            .bytes()
-            .all(|character| character.is_ascii_alphanumeric() || matches!(character, b'-' | b'_'));
-    if valid {
-        Ok(())
-    } else {
-        Err(AppError::Validation(format!(
-            "Identificador de {label} no válido"
-        )))
-    }
+    validate_slug(label, id)
 }
 
 fn now_ms() -> u64 {
@@ -222,6 +218,16 @@ mod tests {
         let saved = save_monitor_sync(root.to_str().unwrap(), monitor).unwrap();
         assert!(root.join("monitors/monitor-health.json").is_file());
         assert!(saved.created_at_ms > 0);
+        let path = root.join("monitors/monitor-health.json");
+        let compact = serde_json::to_vec(&saved).unwrap();
+        std::fs::write(&path, &compact).unwrap();
+        let unchanged = save_monitor_sync(root.to_str().unwrap(), saved.clone()).unwrap();
+        assert_eq!(unchanged, saved);
+        assert_eq!(
+            std::fs::read(path).unwrap(),
+            compact,
+            "a no-op must not create Git diffs"
+        );
         assert_eq!(list_monitors_sync(root.to_str().unwrap()).unwrap().len(), 1);
         delete_monitor_sync(root.to_str().unwrap(), "monitor-health").unwrap();
         assert!(list_monitors_sync(root.to_str().unwrap())

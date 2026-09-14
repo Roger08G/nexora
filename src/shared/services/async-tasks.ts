@@ -6,6 +6,11 @@ export class KeyedTaskQueue {
         return this.tails.has(key);
     }
 
+    async drain(): Promise<void> {
+        // Include tasks appended while an earlier write or deletion is still completing.
+        while (this.tails.size > 0) await Promise.all(this.tails.values());
+    }
+
     enqueue<T>(key: string, action: () => Promise<T>): Promise<T> {
         const previous = this.tails.get(key) ?? Promise.resolve();
         const operation = previous.then(action);

@@ -49,8 +49,8 @@ pub struct ProjectSummary {
     request_count: u64,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct KeyValueItem {
     pub id: String,
     pub enabled: bool,
@@ -58,8 +58,8 @@ pub struct KeyValueItem {
     pub value: String,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SavedRequest {
     pub id: String,
     pub collection_id: String,
@@ -164,11 +164,12 @@ pub async fn save_request(
     state: State<'_, AppState>,
     project_root: String,
     request: SavedRequest,
+    expected_request: Option<SavedRequest>,
 ) -> CommandResult<SavedRequest> {
     let project_io = state.project_io.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let _guard = lock_projects(&project_io)?;
-        save_request_sync(&project_root, request)
+        save_request_checked(&project_root, request, expected_request.as_ref())
     })
     .await
     .map_err(|error| AppError::Internal(error.to_string()))?
@@ -332,9 +333,15 @@ fn create_request_folder_sync(project_root: &str, name: &str) -> Result<RequestF
     Ok(folder)
 }
 
-fn save_request_sync(
+#[cfg(test)]
+fn save_request_sync(project_root: &str, request: SavedRequest) -> Result<SavedRequest, AppError> {
+    save_request_checked(project_root, request, None)
+}
+
+fn save_request_checked(
     project_root: &str,
     mut request: SavedRequest,
+    expected_request: Option<&SavedRequest>,
 ) -> Result<SavedRequest, AppError> {
     let root = validated_project_root(project_root)?;
     request.name = request.name.trim().to_owned();
@@ -342,17 +349,39 @@ fn save_request_sync(
     request.method = request.method.to_uppercase();
     validate_request(&request)?;
 
+    let directory = requests_dir(&root).join(&request.collection_id);
+    if directory.exists() {
+        validate_directory(&directory)?;
+    }
+    let path = directory.join(format!("{}.json", request.id));
+    if path.exists() {
+        let current: SavedRequest = read_json(&path, MAX_PROJECT_FILE_BYTES, "La petición")?;
+        validate_resource_filename(&path, &current.id)?;
+        if current == request {
+            return Ok(current);
+        }
+        if expected_request != Some(&current) {
+            return Err(external_request_conflict());
+        }
+    } else if expected_request.is_some() {
+        return Err(external_request_conflict());
+    }
+    // Only create metadata after accepting the baseline. Git may have deleted
+    // both the request and its folder while this draft was still open.
     let folder = ensure_request_folder(&root, &request.collection_id, &request.collection_name)?;
     request.collection_name = folder.name;
-
-    let directory = requests_dir(&root).join(&request.collection_id);
     ensure_directory(&directory)?;
-    let path = directory.join(format!("{}.json", request.id));
     let mut contents = serde_json::to_string_pretty(&request)?;
     contents.push('\n');
     validate_request_capacity(&root, &path, contents.len() as u64)?;
     write_text_atomic(&path, &contents, MAX_PROJECT_FILE_BYTES)?;
     Ok(request)
+}
+
+fn external_request_conflict() -> AppError {
+    AppError::Conflict(
+        "La petición cambió fuera de Nexora. Conserva tu borrador y usa Recargar para revisar los cambios de Git o del editor.".into(),
+    )
 }
 
 fn validate_request_capacity(root: &Path, target: &Path, new_bytes: u64) -> Result<(), AppError> {
@@ -372,7 +401,14 @@ fn validate_request_capacity(root: &Path, target: &Path, new_bytes: u64) -> Resu
             {
                 continue;
             }
-            if path.file_name() == target.file_name() {
+            if path
+                .file_name()
+                .zip(target.file_name())
+                .is_some_and(|(left, right)| {
+                    left.to_string_lossy()
+                        .eq_ignore_ascii_case(&right.to_string_lossy())
+                })
+            {
                 return Err(AppError::Conflict(
                     "Ya existe una petición con ese identificador en otra carpeta".into(),
                 ));
@@ -464,7 +500,7 @@ fn list_requests_from_root(root: &Path) -> Result<Vec<SavedRequest>, AppError> {
             validate_request(&request)?;
             validate_resource_filename(&entry.path(), &request.id)?;
             if folder.file_name().to_str() != Some(&request.collection_id)
-                || !identities.insert(request.id.clone())
+                || !identities.insert(request.id.to_ascii_lowercase())
             {
                 return Err(AppError::Validation(
                     "La petición tiene una carpeta incorrecta o un identificador duplicado".into(),
@@ -770,9 +806,15 @@ fn contains_plain_text_secret(value: &str) -> bool {
             let key = key.trim_matches(|character: char| {
                 character.is_ascii_whitespace() || matches!(character, '"' | '\'' | '{' | '}')
             });
-            is_sensitive_key(key)
-                && !value.trim().is_empty()
-                && !uses_secret_reference(key, value.trim())
+            // Form/query keys and values may be percent-encoded even when the URL
+            // still contains unresolved {{variables}} and cannot be parsed whole.
+            let mut decoded = reqwest::Url::parse("http://nexora.invalid/").expect("static URL");
+            decoded.set_query(Some(&format!("{key}={value}")));
+            decoded.query_pairs().any(|(key, value)| {
+                is_sensitive_key(&key)
+                    && !value.trim().is_empty()
+                    && !uses_secret_reference(&key, value.trim())
+            })
         })
     })
 }
@@ -798,8 +840,17 @@ fn is_dangerous_display_character(character: char) -> bool {
         )
 }
 
-fn validate_slug(label: &str, value: &str) -> Result<(), AppError> {
+pub(crate) fn validate_slug(label: &str, value: &str) -> Result<(), AppError> {
+    let upper = value.to_ascii_uppercase();
+    let reserved = matches!(upper.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || upper
+            .strip_prefix("COM")
+            .or_else(|| upper.strip_prefix("LPT"))
+            .is_some_and(|number| {
+                matches!(number, "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9")
+            });
     let valid = !value.is_empty()
+        && !reserved
         && value.len() <= 80
         && value
             .bytes()
@@ -808,7 +859,7 @@ fn validate_slug(label: &str, value: &str) -> Result<(), AppError> {
         Ok(())
     } else {
         Err(AppError::Validation(format!(
-            "El identificador de {label} solo puede contener letras, números, guiones y guiones bajos"
+            "El identificador de {label} solo admite letras, números, guiones y guiones bajos; no nombres reservados de Windows"
         )))
     }
 }
@@ -902,12 +953,13 @@ fn ensure_migration_compatible(
             source.display()
         )));
     }
-    if !destination.exists() {
-        return Ok(());
-    }
-    let destination_type = fs::symlink_metadata(destination)?.file_type();
-    if destination_type.is_symlink() || !destination_type.is_dir() {
-        return Err(migration_conflict(source, destination));
+    match fs::symlink_metadata(destination) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+            return Err(migration_conflict(source, destination));
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
     }
 
     for entry in fs::read_dir(source)? {
@@ -924,11 +976,18 @@ fn ensure_migration_compatible(
                 inspected_entries,
             )?;
         } else if file_type.is_file() {
-            if destination_path.exists() {
-                let destination_type = fs::symlink_metadata(&destination_path)?.file_type();
+            let source_bytes =
+                read_bytes(&source_path, MAX_PROJECT_FILE_BYTES, "El archivo heredado")?;
+            let destination_metadata = match fs::symlink_metadata(&destination_path) {
+                Ok(metadata) => Some(metadata),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                Err(error) => return Err(error.into()),
+            };
+            if let Some(metadata) = destination_metadata {
+                let destination_type = metadata.file_type();
                 if destination_type.is_symlink()
                     || !destination_type.is_file()
-                    || read_bytes(&source_path, MAX_PROJECT_FILE_BYTES, "El archivo heredado")?
+                    || source_bytes
                         != read_bytes(
                             &destination_path,
                             MAX_PROJECT_FILE_BYTES,
@@ -1121,7 +1180,14 @@ fn ensure_runtime_ignored(root: &Path) -> Result<(), AppError> {
     } else {
         String::new()
     };
-    if contents.lines().any(|line| line.trim() == "runtime/") {
+    // A later negation can cancel an earlier rule and expose local database data.
+    if contents
+        .lines()
+        .rev()
+        .map(str::trim_end)
+        .find(|line| !line.is_empty() && !line.starts_with('#'))
+        .is_some_and(|line| matches!(line, "runtime/" | "/runtime/"))
+    {
         return Ok(());
     }
     if !contents.is_empty() && !contents.ends_with('\n') {
@@ -1362,6 +1428,64 @@ mod tests {
         super::write_json_atomic(&path, &manifest).unwrap();
 
         assert!(open_project_sync(root.to_str().unwrap()).is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn rejects_encoded_plaintext_secrets_without_rejecting_variable_references() {
+        for value in [
+            "pass%77ord=secret",
+            "password=#secret",
+            "password=%23secret",
+            "access%5Ftoken=secret",
+            "password=secret#fragment",
+        ] {
+            assert!(super::contains_plain_text_secret(value), "{value}");
+        }
+        for value in [
+            "password={{password}}",
+            "pass%77ord=%7B%7Bpassword%7D%7D",
+            "name=public",
+            "password=",
+        ] {
+            assert!(!super::contains_plain_text_secret(value), "{value}");
+        }
+        assert!(super::contains_plain_url_secret(
+            "{{baseUrl}}/login?pass%77ord=secret"
+        ));
+        assert!(!super::contains_plain_url_secret(
+            "{{baseUrl}}/login?pass%77ord=%7B%7Bpassword%7D%7D"
+        ));
+    }
+
+    #[test]
+    fn identifiers_are_portable_to_windows() {
+        for value in ["CON", "con", "PRN", "aux", "NUL", "COM1", "lpt9"] {
+            assert!(super::validate_slug("recurso", value).is_err());
+        }
+        for value in ["health", "users-v2", "com10", "con_users"] {
+            assert!(super::validate_slug("recurso", value).is_ok());
+        }
+    }
+
+    #[test]
+    fn migration_validates_nested_files_before_moving_any_directory() {
+        let root = temporary_directory();
+        create_project_sync(root.to_str().unwrap(), "Migración").unwrap();
+        for directory in ["folders", "requests", "monitors"] {
+            std::fs::rename(root.join(directory), root.join(".nexora").join(directory)).unwrap();
+        }
+        let source = root.join(".nexora/requests/general");
+        std::fs::create_dir(&source).unwrap();
+        std::fs::File::create(source.join("oversized.json"))
+            .unwrap()
+            .set_len((super::MAX_PROJECT_FILE_BYTES + 1) as u64)
+            .unwrap();
+        assert!(open_project_sync(root.to_str().unwrap()).is_err());
+        for directory in ["folders", "requests", "monitors"] {
+            assert!(root.join(".nexora").join(directory).is_dir());
+            assert!(!root.join(directory).exists());
+        }
         std::fs::remove_dir_all(root).unwrap();
     }
 }

@@ -17,10 +17,15 @@ const GlobalSearchContext = createContext<GlobalSearchContextValue | null>(null)
 
 type GlobalSearchProviderProps = {
     children: ReactNode;
+    disabled?: boolean;
     onWorkspaceChange: (workspace: WorkspaceId) => void;
 };
 
-export function GlobalSearchProvider({ children, onWorkspaceChange }: GlobalSearchProviderProps) {
+export function GlobalSearchProvider({
+    children,
+    disabled = false,
+    onWorkspaceChange,
+}: GlobalSearchProviderProps) {
     const [isOpen, setIsOpen] = useState(false);
     const [sources, setSources] = useState<Record<string, GlobalSearchItem[]>>({});
 
@@ -50,29 +55,36 @@ export function GlobalSearchProvider({ children, onWorkspaceChange }: GlobalSear
         function handleKeyDown(event: KeyboardEvent) {
             if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
                 event.preventDefault();
-                setIsOpen((current) => !current);
+                if (!disabled) setIsOpen((current) => !current);
             } else if (event.key === "Escape") {
                 setIsOpen(false);
             }
         }
         window.addEventListener("keydown", handleKeyDown);
         return () => window.removeEventListener("keydown", handleKeyDown);
-    }, []);
+    }, [disabled]);
+
+    useEffect(() => {
+        if (disabled) setIsOpen(false);
+    }, [disabled]);
 
     const value = useMemo<GlobalSearchContextValue>(
         () => ({
             closeSearch: () => setIsOpen(false),
-            isOpen,
+            isOpen: isOpen && !disabled,
             items,
-            openSearch: () => setIsOpen(true),
+            openSearch: () => {
+                if (!disabled) setIsOpen(true);
+            },
             registerItems,
             selectItem: (item) => {
+                if (disabled) return;
                 onWorkspaceChange(item.workspace);
                 item.action?.();
                 setIsOpen(false);
             },
         }),
-        [isOpen, items, onWorkspaceChange, registerItems],
+        [disabled, isOpen, items, onWorkspaceChange, registerItems],
     );
 
     return <GlobalSearchContext.Provider value={value}>{children}</GlobalSearchContext.Provider>;

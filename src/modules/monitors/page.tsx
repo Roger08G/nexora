@@ -25,7 +25,7 @@ export function MonitorsPage() {
     const { settings } = useAppSettings();
     const { registerItems } = useGlobalSearch();
     const { record } = useHistory();
-    const { project } = useProject();
+    const { busy, project, projectLoad, registerBeforeProjectChange } = useProject();
     const { values } = useSessionVariables();
     const [monitors, setMonitors] = useState<LocalMonitor[]>([]);
     const [requests, setRequests] = useState<SavedRequest[]>([]);
@@ -45,6 +45,20 @@ export function MonitorsPage() {
     const monitorQueue = useRef(new KeyedTaskQueue());
     const monitorsRef = useRef(monitors);
     const mounted = useRef(true);
+    const paused = busy || Boolean(projectLoad);
+    const pausedRef = useRef(paused);
+
+    useEffect(() => {
+        pausedRef.current = paused;
+    }, [paused]);
+    useEffect(
+        () =>
+            registerBeforeProjectChange(async () => {
+                await monitorQueue.current.drain();
+                return true;
+            }),
+        [registerBeforeProjectChange],
+    );
 
     useEffect(
         () => () => {
@@ -98,15 +112,16 @@ export function MonitorsPage() {
 
     const hasScheduledMonitors = monitors.some((monitor) => monitor.enabled);
     useEffect(() => {
-        if (!hasScheduledMonitors) return;
+        if (!hasScheduledMonitors || paused) return;
         const timer = window.setInterval(() => setNow(Date.now()), 1_000);
         return () => window.clearInterval(timer);
-    }, [hasScheduledMonitors]);
+    }, [hasScheduledMonitors, paused]);
 
     const runMonitor = useCallback(
         async (monitor: LocalMonitor, notify: boolean) => {
             if (
                 !mounted.current ||
+                pausedRef.current ||
                 deletingIds.current.has(monitor.id) ||
                 runningIds.current.has(monitor.id)
             )
@@ -128,6 +143,7 @@ export function MonitorsPage() {
                 if (!request) throw new Error("La petición enlazada ya no existe.");
                 runningRequest = request;
                 const response = await executeRequest(request, variables, timeout);
+                if (!mounted.current) return;
                 await record({ request, response, source: "monitor" });
                 if (!mounted.current || deletingIds.current.has(monitor.id)) return;
                 const successful = response.status < 400;
@@ -157,6 +173,7 @@ export function MonitorsPage() {
                     });
                 }
             } catch (error) {
+                if (!mounted.current) return;
                 const message = getErrorMessage(error);
                 const request = runningRequest;
                 if (request) await record({ error: message, request, source: "monitor" });
@@ -181,6 +198,7 @@ export function MonitorsPage() {
     );
 
     useEffect(() => {
+        if (paused) return;
         const activeMonitors = monitors.filter((monitor) => monitor.enabled);
         const nextRuntime = Object.fromEntries(
             activeMonitors.map((monitor) => [
@@ -210,7 +228,7 @@ export function MonitorsPage() {
             }, monitor.intervalSeconds * 1_000),
         );
         return () => timers.forEach((timer) => window.clearInterval(timer));
-    }, [monitors, runMonitor]);
+    }, [monitors, paused, runMonitor]);
 
     useEffect(() => {
         registerItems(
@@ -241,7 +259,7 @@ export function MonitorsPage() {
         if (!project) return;
         setSaving(true);
         try {
-            const saved = await persistMonitor(project.root, {
+            const monitor: LocalMonitor = {
                 createdAtMs: 0,
                 enabled: true,
                 id: `monitor-${crypto.randomUUID()}`,
@@ -250,7 +268,10 @@ export function MonitorsPage() {
                 requestId: request.id,
                 requestName: request.name,
                 updatedAtMs: 0,
-            });
+            };
+            const saved = await monitorQueue.current.enqueue(monitor.id, () =>
+                persistMonitor(project.root, monitor),
+            );
             updateMonitors((current) => [...current, saved]);
             setSelectedId(saved.id);
             setCreating(false);

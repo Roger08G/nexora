@@ -3,6 +3,7 @@ import type { ComponentType } from "react";
 import { DEFAULT_WORKSPACE, getWorkspace } from "@/app/config/workspaces";
 import { WORKSPACES } from "@/app/config/workspaces";
 import { GlobalSearchProvider } from "@/app/providers/GlobalSearchProvider";
+import { useProject } from "@/app/providers/ProjectProvider";
 import { ApiPage } from "@/modules/api/page";
 import { EnvironmentsPage } from "@/modules/environments/page";
 import { HistoryPage } from "@/modules/history/page";
@@ -27,12 +28,16 @@ const WORKSPACE_PAGES: Record<WorkspaceId, ComponentType> = {
 };
 
 export function AppShell() {
+    const { busy, projectLoad } = useProject();
     const [activeWorkspace, setActiveWorkspace] = useState<WorkspaceId>(DEFAULT_WORKSPACE);
     const workspace = getWorkspace(activeWorkspace);
 
     return (
-        <GlobalSearchProvider onWorkspaceChange={setActiveWorkspace}>
-            <div className="app-shell">
+        <GlobalSearchProvider
+            disabled={busy || Boolean(projectLoad)}
+            onWorkspaceChange={setActiveWorkspace}
+        >
+            <div className="app-shell" aria-busy={busy} inert={busy || Boolean(projectLoad)}>
                 <TitleBar />
                 <div className="app-shell__body">
                     <ActivityRail

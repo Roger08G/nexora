@@ -32,7 +32,7 @@ import { KeyedTaskQueue, LatestOperation } from "@/shared/services/async-tasks";
 export function ApiPage() {
     const { settings } = useAppSettings();
     const { registerItems } = useGlobalSearch();
-    const { project, registerBeforeProjectChange } = useProject();
+    const { busy, project, registerBeforeProjectChange } = useProject();
     const { values: sessionVariables } = useSessionVariables();
     const { record: recordHistory } = useHistory();
     const [folderSummaries, setFolderSummaries] = useState<RequestFolderSummary[]>(() => [
@@ -49,7 +49,10 @@ export function ApiPage() {
     const openRequestIdsRef = useRef(openRequestIds);
     const activeRequestIdRef = useRef(activeRequestId);
     const savedSnapshots = useRef(new Map<string, string>());
+    const savedBaselines = useRef(new Map<string, SavedRequest>());
     const saveQueue = useRef(new KeyedTaskQueue());
+    const saveRevisions = useRef(new Map<string, number>());
+    const reloadingIds = useRef(new Set<string>());
     const deletingIds = useRef(new Set<string>());
     const runningIds = useRef(new Set<string>());
     const responseOperation = useRef(new LatestOperation());
@@ -81,6 +84,7 @@ export function ApiPage() {
                 savedSnapshots.current = new Map(
                     saved.map((request) => [request.id, requestSnapshot(request)]),
                 );
+                savedBaselines.current = new Map(saved.map((request) => [request.id, request]));
                 setRequests(next);
                 setFolderSummaries(nextFolders);
                 setSaveStates(
@@ -152,13 +156,26 @@ export function ApiPage() {
 
     useEffect(
         () =>
-            registerBeforeProjectChange(async () => {
-                if (!project || !requestsLoaded || !settings.autoSaveRequests) return true;
-                const results = await Promise.all(
-                    requestsRef.current
-                        .filter((request) => !deletingIds.current.has(request.id))
-                        .map((request) => saveRequest(request, "switch")),
+            registerBeforeProjectChange(async (reason) => {
+                if (!project || !requestsLoaded) return true;
+                await saveQueue.current.drain();
+                const dirty = requestsRef.current.filter(
+                    (request) =>
+                        !deletingIds.current.has(request.id) &&
+                        savedSnapshots.current.get(request.id) !== requestSnapshot(request),
                 );
+                if (!settings.autoSaveRequests) {
+                    return (
+                        dirty.length === 0 ||
+                        window.confirm(
+                            `Hay ${dirty.length} peticiones con cambios sin guardar. ¿Descartarlos y ${reason === "close" ? "cerrar Nexora" : "cambiar de proyecto"}?`,
+                        )
+                    );
+                }
+                const results = await Promise.all(
+                    dirty.map((request) => saveRequest(request, "switch")),
+                );
+                await saveQueue.current.drain();
                 return results.every(Boolean);
             }),
         [project, registerBeforeProjectChange, requestsLoaded, settings.autoSaveRequests],
@@ -196,7 +213,9 @@ export function ApiPage() {
     async function createFolder(name: string) {
         if (!project) return;
         try {
-            const folder = await createRequestFolder(project.root, name);
+            const folder = await saveQueue.current.enqueue("folders", () =>
+                createRequestFolder(project.root, name),
+            );
             setFolderSummaries((current) => [...current, folder]);
             toast.success("Carpeta creada", { description: folder.name });
         } catch (error) {
@@ -226,36 +245,39 @@ export function ApiPage() {
                     await deleteSavedRequest(project.root, request.collectionId, request.id);
                 }
             });
-            savedSnapshots.current.delete(request.id);
-            const remaining = requestsRef.current.filter(
-                (candidate) => candidate.id !== request.id,
-            );
-            const fallbackFolder =
-                folders.find((folder) => folder.id === request.collectionId) ??
-                folders[0] ??
-                DEFAULT_FOLDER;
-            const nextRequests = remaining.length ? remaining : [newRequest(fallbackFolder)];
-            requestsRef.current = nextRequests;
-            setRequests(nextRequests);
-            setSaveStates((current) => {
-                const next = { ...current };
-                delete next[request.id];
-                return next;
-            });
-
-            const nextOpenIds = openRequestIdsRef.current.filter((id) => id !== request.id);
-            const normalizedOpenIds = nextOpenIds.length ? nextOpenIds : [nextRequests[0].id];
-            setOpenRequestIds(normalizedOpenIds);
-            if (activeRequestIdRef.current === request.id) {
-                setActiveRequestId(normalizedOpenIds[0]);
-                resetResponse();
-            }
+            removeLocalRequest(request);
             toast.success("Petición eliminada", { description: request.name });
         } catch (error) {
             deletingIds.current.delete(request.id);
             toast.error("No se pudo eliminar la petición", {
                 description: getErrorMessage(error),
             });
+        }
+    }
+
+    function removeLocalRequest(request: SavedRequest) {
+        deletingIds.current.add(request.id);
+        savedSnapshots.current.delete(request.id);
+        savedBaselines.current.delete(request.id);
+        const remaining = requestsRef.current.filter((candidate) => candidate.id !== request.id);
+        const fallbackFolder =
+            folders.find((folder) => folder.id === request.collectionId) ??
+            folders[0] ??
+            DEFAULT_FOLDER;
+        const nextRequests = remaining.length ? remaining : [newRequest(fallbackFolder)];
+        requestsRef.current = nextRequests;
+        setRequests(nextRequests);
+        setSaveStates((current) => {
+            const next = { ...current };
+            delete next[request.id];
+            return next;
+        });
+        const nextOpenIds = openRequestIdsRef.current.filter((id) => id !== request.id);
+        const normalizedOpenIds = nextOpenIds.length ? nextOpenIds : [nextRequests[0].id];
+        setOpenRequestIds(normalizedOpenIds);
+        if (activeRequestIdRef.current === request.id) {
+            setActiveRequestId(normalizedOpenIds[0]);
+            resetResponse();
         }
     }
 
@@ -303,6 +325,10 @@ export function ApiPage() {
             }
             const workspace = pageRef.current?.closest<HTMLElement>(".workspace-view");
             if (workspace?.dataset.active !== "true") return;
+            if (busy) {
+                event.preventDefault();
+                return;
+            }
             if (document.querySelector('[aria-modal="true"]')) {
                 event.preventDefault();
                 return;
@@ -313,7 +339,7 @@ export function ApiPage() {
 
         window.addEventListener("keydown", handleCloseShortcut);
         return () => window.removeEventListener("keydown", handleCloseShortcut);
-    }, [activeRequestId, openRequestIds.length, settings.autoSaveRequests]);
+    }, [activeRequestId, busy, openRequestIds.length, settings.autoSaveRequests]);
 
     function updateActive(changes: Partial<SavedRequest>, invalidateResponse = true) {
         setRequestsAndRef((current) =>
@@ -379,10 +405,21 @@ export function ApiPage() {
         request: SavedRequest,
         reason: "auto" | "manual" | "rename" | "switch",
     ) {
-        if (!project || deletingIds.current.has(request.id)) return false;
+        if (!project || deletingIds.current.has(request.id) || reloadingIds.current.has(request.id))
+            return false;
+        if (
+            reason === "auto" &&
+            requestsRef.current.find((candidate) => candidate.id === request.id) !== request
+        )
+            return false;
+        const revision = saveRevisions.current.get(request.id) ?? 0;
         const signature = requestSnapshot(request);
         return saveQueue.current.enqueue(request.id, async () => {
-            if (deletingIds.current.has(request.id)) return false;
+            if (
+                deletingIds.current.has(request.id) ||
+                revision !== (saveRevisions.current.get(request.id) ?? 0)
+            )
+                return false;
             if (savedSnapshots.current.get(request.id) === signature) {
                 setRequestSaveState(request.id, "saved");
                 if (reason === "manual") {
@@ -396,9 +433,14 @@ export function ApiPage() {
 
             setRequestSaveState(request.id, "saving");
             try {
-                const saved = await persistRequest(project.root, request);
+                const saved = await persistRequest(
+                    project.root,
+                    request,
+                    savedBaselines.current.get(request.id) ?? null,
+                );
                 const savedSignature = requestSnapshot(saved);
                 savedSnapshots.current.set(saved.id, savedSignature);
+                savedBaselines.current.set(saved.id, saved);
                 setRequestsAndRef((current) =>
                     current.map((candidate) =>
                         candidate.id === saved.id && requestSnapshot(candidate) === signature
@@ -425,12 +467,73 @@ export function ApiPage() {
                 return true;
             } catch (error) {
                 const message = getErrorMessage(error);
-                setRequestSaveState(request.id, "error");
-                toast.error(`No se pudo guardar ${request.name}`, {
-                    description: message,
-                    id: `request-save-${request.id}`,
-                });
+                const conflict =
+                    typeof error === "object" &&
+                    error !== null &&
+                    "code" in error &&
+                    error.code === "conflict";
+                setRequestSaveState(request.id, conflict ? "conflict" : "error");
+                toast.error(
+                    conflict
+                        ? "La petición cambió fuera de Nexora"
+                        : `No se pudo guardar ${request.name}`,
+                    {
+                        description: conflict
+                            ? "Tu borrador se conserva. Recarga para revisar el archivo."
+                            : message,
+                        id: `request-save-${request.id}`,
+                    },
+                );
                 return false;
+            }
+        });
+    }
+
+    async function reloadActiveRequest() {
+        if (!project) return;
+        const request = requestsRef.current.find(
+            (candidate) => candidate.id === activeRequestIdRef.current,
+        );
+        if (
+            !request ||
+            reloadingIds.current.has(request.id) ||
+            !window.confirm(
+                "Se descartarán los cambios de esta petición y se leerá su archivo del proyecto. ¿Continuar?",
+            )
+        )
+            return;
+        reloadingIds.current.add(request.id);
+        saveRevisions.current.set(request.id, (saveRevisions.current.get(request.id) ?? 0) + 1);
+        setRequestSaveState(request.id, "reloading");
+        await saveQueue.current.enqueue(request.id, async () => {
+            setRequestSaveState(request.id, "reloading");
+            try {
+                const diskRequests = await loadRequests(project.root);
+                const diskRequest = diskRequests.find((candidate) => candidate.id === request.id);
+                if (!diskRequest) {
+                    removeLocalRequest(request);
+                    toast.info("La petición fue eliminada fuera de Nexora", {
+                        description: "Se descartó el borrador; no se ha recreado su archivo.",
+                    });
+                    return;
+                }
+                savedBaselines.current.set(request.id, diskRequest);
+                savedSnapshots.current.set(request.id, requestSnapshot(diskRequest));
+                setRequestsAndRef((current) =>
+                    current.map((candidate) =>
+                        candidate.id === request.id ? diskRequest : candidate,
+                    ),
+                );
+                setRequestSaveState(request.id, "saved");
+                if (activeRequestIdRef.current === request.id) resetResponse();
+                toast.success("Petición recargada desde el proyecto");
+            } catch (cause) {
+                setRequestSaveState(request.id, "conflict");
+                toast.error("No se pudo recargar la petición", {
+                    description: getErrorMessage(cause),
+                });
+            } finally {
+                reloadingIds.current.delete(request.id);
             }
         });
     }
@@ -486,6 +589,7 @@ export function ApiPage() {
                         isSending={runningRequestIds.includes(activeRequest.id)}
                         onChange={(draft) => updateActive(draft)}
                         onSave={() => void save()}
+                        onReload={() => void reloadActiveRequest()}
                         onSend={() => void send()}
                         requestId={activeRequest.id}
                         saveState={saveStates[activeRequest.id] ?? "idle"}

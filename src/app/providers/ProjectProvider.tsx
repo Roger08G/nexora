@@ -9,8 +9,11 @@ import {
 } from "react";
 import type { ReactNode } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
+import { isTauri } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { toast } from "@/shared/services/toast";
 import { getErrorMessage, runCommand } from "@/shared/services/native";
+import { prepareProjectLeave, type ProjectLeaveHandler } from "@/shared/services/project-leave";
 
 export type NexoraProject = {
     id: string;
@@ -40,7 +43,7 @@ type ProjectContextValue = {
     openProject: () => Promise<void>;
     project: NexoraProject | null;
     projectLoad: ProjectLoadState | null;
-    registerBeforeProjectChange: (handler: () => Promise<boolean>) => () => void;
+    registerBeforeProjectChange: (handler: ProjectLeaveHandler) => () => void;
 };
 
 const ProjectContext = createContext<ProjectContextValue | null>(null);
@@ -56,11 +59,39 @@ export function ProjectProvider({ children }: ProjectProviderProps) {
     const [projectLoad, setProjectLoad] = useState<ProjectLoadState | null>(null);
     const e2eBootstrapStarted = useRef(false);
     const selecting = useRef(false);
-    const beforeProjectChange = useRef(new Set<() => Promise<boolean>>());
-    const registerBeforeProjectChange = useCallback((handler: () => Promise<boolean>) => {
+    const closing = useRef(false);
+    const beforeProjectChange = useRef(new Set<ProjectLeaveHandler>());
+    const registerBeforeProjectChange = useCallback((handler: ProjectLeaveHandler) => {
         beforeProjectChange.current.add(handler);
         return () => {
             beforeProjectChange.current.delete(handler);
+        };
+    }, []);
+
+    useEffect(() => {
+        if (!isTauri()) return;
+        const appWindow = getCurrentWindow();
+        const listener = appWindow.onCloseRequested(async (event) => {
+            event.preventDefault();
+            if (selecting.current || closing.current) return;
+            closing.current = true;
+            setBusy(true);
+            try {
+                if (await prepareProjectLeave(beforeProjectChange.current, "close")) {
+                    await appWindow.destroy();
+                }
+            } catch (cause) {
+                toast.error("No se pudo cerrar Nexora", { description: getErrorMessage(cause) });
+            } finally {
+                closing.current = false;
+                setBusy(false);
+            }
+        });
+        void listener.catch((cause) =>
+            toast.error("No se pudo proteger el cierre", { description: getErrorMessage(cause) }),
+        );
+        return () => {
+            void listener.then((unlisten) => unlisten()).catch(() => undefined);
         };
     }, []);
 
@@ -97,7 +128,7 @@ export function ProjectProvider({ children }: ProjectProviderProps) {
     }
 
     async function selectProject(kind: ProjectLoadState["kind"]) {
-        if (selecting.current) return;
+        if (selecting.current || closing.current) return;
         selecting.current = true;
         setBusy(true);
         try {
@@ -138,10 +169,9 @@ export function ProjectProvider({ children }: ProjectProviderProps) {
             ready: false,
         });
         try {
-            for (const prepare of beforeProjectChange.current) {
-                if (!(await prepare())) {
-                    throw new Error("No se pudieron guardar las peticiones del proyecto actual.");
-                }
+            if (!(await prepareProjectLeave(beforeProjectChange.current, "switch"))) {
+                setProjectLoad(null);
+                return;
             }
             const nextProject = await action();
             setProject(nextProject);

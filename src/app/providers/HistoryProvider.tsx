@@ -31,10 +31,26 @@ type HistoryContextValue = {
 const HistoryContext = createContext<HistoryContextValue | null>(null);
 
 export function HistoryProvider({ children }: { children: ReactNode }) {
-    const { project } = useProject();
+    const { project, registerBeforeProjectChange } = useProject();
     const [entries, setEntries] = useState<HistoryEntry[]>([]);
     const [loading, setLoading] = useState(true);
     const operations = useRef(new KeyedTaskQueue());
+    const mounted = useRef(true);
+
+    useEffect(
+        () => () => {
+            mounted.current = false;
+        },
+        [],
+    );
+    useEffect(
+        () =>
+            registerBeforeProjectChange(async () => {
+                await operations.current.drain();
+                return true;
+            }),
+        [registerBeforeProjectChange],
+    );
 
     useEffect(() => {
         if (!project) return;
@@ -62,8 +78,9 @@ export function HistoryProvider({ children }: { children: ReactNode }) {
 
     const record = useCallback(
         async ({ error, request, response, source }: RecordExecutionInput) => {
-            if (!project) return null;
+            if (!project || !mounted.current) return null;
             return operations.current.enqueue("history", async () => {
+                if (!mounted.current) return null;
                 try {
                     const entry = await appendHistory(project.root, {
                         durationMs: response?.durationMs ?? null,

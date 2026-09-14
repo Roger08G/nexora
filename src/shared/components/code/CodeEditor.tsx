@@ -1,5 +1,6 @@
-import { memo, useMemo, useRef, type KeyboardEvent, type UIEvent } from "react";
+import { memo, useLayoutEffect, useMemo, useRef, type KeyboardEvent, type UIEvent } from "react";
 import { highlightLine, type CodeLanguage } from "@/shared/components/code/syntax";
+import { indentSelection } from "@/shared/components/code/indentation";
 
 type CodeEditorProps = {
     ariaLabel: string;
@@ -10,8 +11,6 @@ type CodeEditorProps = {
     onChange: (value: string) => void;
     value: string;
 };
-
-const TAB = "    ";
 
 export function CodeEditor({
     ariaLabel,
@@ -24,10 +23,14 @@ export function CodeEditor({
 }: CodeEditorProps) {
     const codeRef = useRef<HTMLElement>(null);
     const gutterRef = useRef<HTMLDivElement>(null);
+    const textareaRef = useRef<HTMLTextAreaElement>(null);
     const lines = useMemo(() => value.replace(/\r\n?/g, "\n").split("\n"), [value]);
 
     function syncScroll(event: UIEvent<HTMLTextAreaElement>) {
-        const { scrollLeft, scrollTop } = event.currentTarget;
+        syncLayers(event.currentTarget);
+    }
+
+    function syncLayers({ scrollLeft, scrollTop }: HTMLTextAreaElement) {
         if (codeRef.current) {
             codeRef.current.style.transform = `translate(${-scrollLeft}px, ${-scrollTop}px)`;
         }
@@ -36,16 +39,22 @@ export function CodeEditor({
         }
     }
 
+    useLayoutEffect(() => {
+        if (textareaRef.current) syncLayers(textareaRef.current);
+    }, [value]);
+
     function insertTab(event: KeyboardEvent<HTMLTextAreaElement>) {
         if (event.key !== "Tab") return;
         event.preventDefault();
         const textarea = event.currentTarget;
         const start = textarea.selectionStart;
         const end = textarea.selectionEnd;
-        const nextValue = `${value.slice(0, start)}${TAB}${value.slice(end)}`;
-        onChange(nextValue);
+        const next = indentSelection(textarea.value, start, end, event.shiftKey);
+        onChange(next.value);
         requestAnimationFrame(() => {
-            textarea.selectionStart = textarea.selectionEnd = start + TAB.length;
+            if (textarea.isConnected && textarea.value === next.value) {
+                textarea.setSelectionRange(next.start, next.end);
+            }
         });
     }
 
@@ -67,6 +76,7 @@ export function CodeEditor({
                     </code>
                 </pre>
                 <textarea
+                    ref={textareaRef}
                     aria-label={ariaLabel}
                     autoFocus={autoFocus}
                     onBlur={onBlur}

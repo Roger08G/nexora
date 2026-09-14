@@ -66,6 +66,44 @@ describe("resource mutations", () => {
         await Promise.all([edit, revert]);
         expect(persisted).toBe("original");
     });
+
+    test("drain includes other resources and mutations queued while leaving", async () => {
+        const queue = new KeyedTaskQueue();
+        const writeGate = deferred();
+        const deleteGate = deferred();
+        const writes: string[] = [];
+        void queue.enqueue("request", async () => {
+            await writeGate.promise;
+            writes.push("saved");
+            void queue.enqueue("monitor", async () => {
+                await deleteGate.promise;
+                writes.push("deleted");
+            });
+        });
+        let drained = false;
+        const leaving = queue.drain().then(() => {
+            drained = true;
+        });
+        writeGate.resolve();
+        await Promise.resolve();
+        await Promise.resolve();
+        expect(drained).toBe(false);
+        deleteGate.resolve();
+        await leaving;
+        expect(writes).toEqual(["saved", "deleted"]);
+        expect(queue.has("monitor")).toBe(false);
+    });
+
+    test("drain settles after failed accepted operations", async () => {
+        const queue = new KeyedTaskQueue();
+        const failed = queue.enqueue("request", async () => {
+            throw new Error("conflict");
+        });
+        const handled = failed.catch(() => undefined);
+        await queue.drain();
+        await handled;
+        expect(queue.has("request")).toBe(false);
+    });
 });
 
 describe("selection-bound results", () => {

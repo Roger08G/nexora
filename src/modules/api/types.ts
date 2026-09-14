@@ -46,7 +46,7 @@ export type RequestDraft = {
     body: string;
 };
 
-export type RequestSaveState = "idle" | "saved" | "saving" | "error";
+export type RequestSaveState = "idle" | "saved" | "saving" | "reloading" | "error" | "conflict";
 
 export type HttpResponse = {
     body: string;

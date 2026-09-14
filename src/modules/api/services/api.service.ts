@@ -28,8 +28,12 @@ export function createRequestFolder(projectRoot: string, name: string) {
     return runCommand<RequestFolderSummary>("create_request_folder", { name, projectRoot });
 }
 
-export function persistRequest(projectRoot: string, request: SavedRequest) {
-    return runCommand<SavedRequest>("save_request", { projectRoot, request });
+export function persistRequest(
+    projectRoot: string,
+    request: SavedRequest,
+    expectedRequest: SavedRequest | null,
+) {
+    return runCommand<SavedRequest>("save_request", { projectRoot, request, expectedRequest });
 }
 
 export function deleteSavedRequest(projectRoot: string, collectionId: string, requestId: string) {

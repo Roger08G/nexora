@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { FiActivity, FiCode, FiDatabase } from "react-icons/fi";
 import type { RequestDraft, ResponseState } from "@/modules/api/types";
 import { CodeViewer } from "@/shared/components/code/CodeViewer";
+import { formatJsonText } from "@/shared/components/code/json-format";
 import { StatusBadge } from "@/shared/components/ui/StatusBadge";
 
 type ResponsePanelProps = {
@@ -16,6 +17,8 @@ export function ResponsePanel({ draft, state }: ResponsePanelProps) {
     useEffect(() => setActiveTab("body"), [state]);
 
     const response = state.status === "success" ? state.response : null;
+    const responseBody = response?.body ?? "";
+    const formattedBody = useMemo(() => formatJsonText(responseBody), [responseBody]);
     const badge = getBadge(state);
 
     return (
@@ -59,8 +62,8 @@ export function ResponsePanel({ draft, state }: ResponsePanelProps) {
                         <CodeViewer
                             ariaLabel="Cuerpo de respuesta"
                             className="response-result__code"
-                            language={isJson(state.response.body) ? "json" : "text"}
-                            value={formatBody(state.response.body)}
+                            language={formattedBody !== null ? "json" : "text"}
+                            value={formattedBody ?? responseBody}
                         />
                     )}
                 </div>
@@ -111,23 +114,6 @@ function getBadge(state: ResponseState) {
         };
     }
     return { label: "Sin ejecutar", tone: "neutral" as const };
-}
-
-function formatBody(body: string) {
-    try {
-        return JSON.stringify(JSON.parse(body), null, 4);
-    } catch {
-        return body;
-    }
-}
-
-function isJson(body: string) {
-    try {
-        JSON.parse(body);
-        return true;
-    } catch {
-        return false;
-    }
 }
 
 function ResponseHeaders({ headers }: { headers: readonly { key: string; value: string }[] }) {

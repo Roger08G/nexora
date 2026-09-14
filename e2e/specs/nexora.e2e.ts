@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { $, $$, browser, expect } from "@wdio/globals";
 import { createProjectFixture, E2E_API_URL, readSavedRequest } from "../support/fixture";
@@ -343,6 +343,120 @@ describe("Nexora en el WebView real de Tauri", () => {
         } finally {
             await restoreIpcGate();
         }
+    });
+
+    it("conserva cambios externos de Git y permite recargar sin sobrescribirlos con el borrador", async () => {
+        await openWorkspace("API Client");
+        await openRequest("Health check");
+        const path = join(projectRoot, "requests", "general", "health.json");
+        const original = readSavedRequest(projectRoot, "general", "health");
+        if (typeof original.url !== "string") throw new Error("La URL de la fixture no es válida");
+        const externalUrl = `${E2E_API_URL}/health?external=git`;
+        const draftUrl = `${E2E_API_URL}/health?draft=local`;
+        writeFileSync(path, JSON.stringify({ ...original, url: externalUrl }, null, 4), "utf8");
+        await $('[aria-label="URL de la petición"]').setValue(draftUrl);
+        await expect($(".request-save-state")).toHaveText("Cambio externo");
+        expect(readSavedRequest(projectRoot, "general", "health").url).toBe(externalUrl);
+        expect(await $('[aria-label="URL de la petición"]').getValue()).toBe(draftUrl);
+
+        await setConfirmResponse(true);
+        try {
+            await clickButton("Recargar");
+            await browser.waitUntil(
+                async () =>
+                    (await $('[aria-label="URL de la petición"]').getValue()) === externalUrl,
+            );
+            await expect($(".request-save-state")).toHaveText(expect.stringContaining("Guardado"));
+            // A discarded draft's old debounce must not rewrite the reloaded Git resource.
+            await browser.pause(1_200);
+            expect(readSavedRequest(projectRoot, "general", "health").url).toBe(externalUrl);
+            await $('[aria-label="URL de la petición"]').setValue(original.url);
+            await browser.waitUntil(
+                () => readSavedRequest(projectRoot, "general", "health").url === original.url,
+            );
+        } finally {
+            await setConfirmResponse(null);
+        }
+    });
+
+    it("puede cancelar el cambio de proyecto sin perder un borrador con guardado manual", async () => {
+        await openWorkspace("Ajustes");
+        const autoSaveToggle = $(
+            "//div[contains(concat(' ', normalize-space(@class), ' '), ' settings-field ') and .//strong[normalize-space(.)='Guardado automático']]//input",
+        );
+        expect(await autoSaveToggle.isSelected()).toBe(true);
+        await autoSaveToggle.click();
+        await openWorkspace("API Client");
+        await openRequest("Health check");
+        const original = readSavedRequest(projectRoot, "general", "health");
+        if (typeof original.url !== "string") throw new Error("La URL de la fixture no es válida");
+        const draftUrl = `${E2E_API_URL}/health?manual=keep`;
+        await $('[aria-label="URL de la petición"]').setValue(draftUrl);
+        await installIpcGate(null, projectRoot);
+        await setConfirmResponse(false);
+        try {
+            await openProjectFromFooter();
+            await browser.waitUntil(
+                async () =>
+                    await browser.execute(() => {
+                        const shell = document.querySelector<HTMLElement>(".app-shell");
+                        return (
+                            shell?.getAttribute("aria-busy") === "false" &&
+                            !document.querySelector(".loading-screen")
+                        );
+                    }),
+            );
+            expect((await ipcGateState()).openProjectCalls).toBe(0);
+            expect(await $('[aria-label="URL de la petición"]').getValue()).toBe(draftUrl);
+            expect(readSavedRequest(projectRoot, "general", "health").url).toBe(original.url);
+            await $('[aria-label="URL de la petición"]').setValue(original.url);
+        } finally {
+            await restoreIpcGate();
+            await setConfirmResponse(null);
+            await openWorkspace("Ajustes");
+            if (!(await autoSaveToggle.isSelected())) await autoSaveToggle.click();
+            await openWorkspace("API Client");
+        }
+    });
+
+    it("el cierre nativo espera un autosave pendiente antes de destruir la ventana", async () => {
+        await openWorkspace("API Client");
+        await openRequest("Health check");
+        const original = readSavedRequest(projectRoot, "general", "health");
+        if (typeof original.url !== "string") throw new Error("La URL de la fixture no es válida");
+        const pendingUrl = `${E2E_API_URL}/health?window-close=flush`;
+        await installIpcGate("health", null, true);
+        try {
+            await $('[aria-label="URL de la petición"]').setValue(pendingUrl);
+            await waitForHeldSave();
+            await browser.execute(async () => {
+                const native = (
+                    window as unknown as {
+                        __TAURI_INTERNALS__: {
+                            invoke: (command: string, args: object) => Promise<unknown>;
+                        };
+                    }
+                ).__TAURI_INTERNALS__;
+                await native.invoke("plugin:window|close", { label: "main" });
+            });
+            await browser.waitUntil(
+                async () => (await $(".app-shell").getAttribute("aria-busy")) === "true",
+            );
+            expect((await ipcGateState()).destroyCalls).toBe(0);
+            expect(readSavedRequest(projectRoot, "general", "health").url).toBe(original.url);
+            await releaseHeldSave();
+            await browser.waitUntil(async () => (await ipcGateState()).destroyCalls === 1);
+            expect(readSavedRequest(projectRoot, "general", "health").url).toBe(pendingUrl);
+            await browser.waitUntil(
+                async () => (await $(".app-shell").getAttribute("aria-busy")) === "false",
+            );
+        } finally {
+            await restoreIpcGate();
+        }
+        await $('[aria-label="URL de la petición"]').setValue(original.url);
+        await browser.waitUntil(
+            () => readSavedRequest(projectRoot, "general", "health").url === original.url,
+        );
     });
 
     it("abre Ctrl+K, aplica ajustes persistentes y muestra toasts temáticos", async () => {
@@ -729,6 +843,7 @@ async function stopLocalRuntime(workspace: string, selector: string) {
 type IpcGateWindow = Window & {
     __NEXORA_E2E_IPC_GATE__?: {
         completedSaves: number;
+        destroyCalls: number;
         held: boolean;
         openProjectCalls: number;
         releaseSave?: () => void;
@@ -739,15 +854,20 @@ type IpcGateWindow = Window & {
 
 // Delay only the selected save; every persistence command still reaches the real Rust backend.
 // The native folder picker is substituted so a controlled fixture can be opened unattended.
-async function installIpcGate(requestId: string | null, selectedRoot: string | null = null) {
+async function installIpcGate(
+    requestId: string | null,
+    selectedRoot: string | null = null,
+    preserveWindow = false,
+) {
     await browser.execute(
-        (targetId: string | null, root: string | null) => {
+        (targetId: string | null, root: string | null, preserve: boolean) => {
             const target = window as unknown as IpcGateWindow;
             if (target.__NEXORA_E2E_IPC_GATE__)
                 throw new Error("Ya hay una barrera IPC E2E instalada");
             const original = window.fetch;
             const gate: NonNullable<IpcGateWindow["__NEXORA_E2E_IPC_GATE__"]> = {
                 completedSaves: 0,
+                destroyCalls: 0,
                 held: false,
                 openProjectCalls: 0,
                 saveCalls: 0,
@@ -777,6 +897,11 @@ async function installIpcGate(requestId: string | null, selectedRoot: string | n
                 if (command === "plugin:dialog|open" && root !== null) {
                     return Response.json(root, { headers: { "Tauri-Response": "ok" } });
                 }
+                if (command === "plugin:window|destroy" && preserve) {
+                    // CloseRequested and saves are real; keep the final WebView alive for DB cleanup.
+                    gate.destroyCalls++;
+                    return Response.json(null, { headers: { "Tauri-Response": "ok" } });
+                }
                 if (command === "open_project") gate.openProjectCalls++;
                 const request = args?.request as { id?: string } | undefined;
                 if (command === "save_request" && targetId !== null && request?.id === targetId) {
@@ -802,6 +927,7 @@ async function installIpcGate(requestId: string | null, selectedRoot: string | n
         },
         requestId,
         selectedRoot,
+        preserveWindow,
     );
 }
 
@@ -811,6 +937,7 @@ async function ipcGateState() {
         if (!gate) throw new Error("No hay barrera IPC E2E");
         return {
             completedSaves: gate.completedSaves,
+            destroyCalls: gate.destroyCalls,
             held: gate.held,
             openProjectCalls: gate.openProjectCalls,
         };
@@ -836,6 +963,19 @@ async function restoreIpcGate() {
 async function openProjectFromFooter() {
     await $(".status-bar__project-trigger").click();
     await $(".status-bar__project-menu button").click();
+}
+
+async function setConfirmResponse(response: boolean | null) {
+    await browser.execute((answer: boolean | null) => {
+        const target = window as Window & { __NEXORA_E2E_CONFIRM__?: typeof window.confirm };
+        if (answer === null) {
+            if (target.__NEXORA_E2E_CONFIRM__) window.confirm = target.__NEXORA_E2E_CONFIRM__;
+            delete target.__NEXORA_E2E_CONFIRM__;
+            return;
+        }
+        target.__NEXORA_E2E_CONFIRM__ ??= window.confirm;
+        window.confirm = () => answer;
+    }, response);
 }
 
 expect(existsSync(join(projectRoot, ".nexora"))).toBe(true);

@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react";
-import { FiCheck, FiLoader, FiSave, FiSend } from "react-icons/fi";
+import { FiCheck, FiLoader, FiRefreshCw, FiSave, FiSend } from "react-icons/fi";
 import type { RequestDraft, RequestSaveState } from "@/modules/api/types";
 import { KeyValueEditor } from "@/modules/api/components/KeyValueEditor";
 import { MethodSelect } from "@/modules/api/components/MethodSelect";
 import { TemplateInput } from "@/modules/api/components/TemplateField";
 import { CodeEditor } from "@/shared/components/code/CodeEditor";
+import { formatJsonText } from "@/shared/components/code/json-format";
 import { ActionButton } from "@/shared/components/ui/ActionButton";
 
 type EditorSection = "params" | "headers" | "body" | "auth";
@@ -16,6 +17,7 @@ type RequestEditorProps = {
     isSending: boolean;
     onChange: (draft: RequestDraft) => void;
     onSave: () => void;
+    onReload: () => void;
     onSend: () => void;
     requestId: string;
     saveState: RequestSaveState;
@@ -35,6 +37,7 @@ export function RequestEditor({
     isSending,
     onChange,
     onSave,
+    onReload,
     onSend,
     requestId,
     saveState,
@@ -54,7 +57,11 @@ export function RequestEditor({
     }, [activeSection, requestId]);
 
     return (
-        <section className="request-editor">
+        <section
+            className="request-editor"
+            aria-busy={saveState === "reloading"}
+            inert={saveState === "reloading"}
+        >
             <div className="request-editor__bar">
                 <MethodSelect
                     onChange={(method) => onChange({ ...draft, method })}
@@ -68,6 +75,16 @@ export function RequestEditor({
                     value={draft.url}
                 />
                 <SaveState autoSave={autoSave} state={saveState} />
+                {saveState === "conflict" ? (
+                    <ActionButton
+                        icon={FiRefreshCw}
+                        onClick={onReload}
+                        tone="ghost"
+                        title="Leer el archivo del proyecto y descartar este borrador"
+                    >
+                        Recargar
+                    </ActionButton>
+                ) : null}
                 <ActionButton disabled={isSending} icon={FiSend} onClick={onSend} tone="primary">
                     {isSending ? "Enviando" : "Enviar"}
                 </ActionButton>
@@ -150,20 +167,22 @@ export function RequestEditor({
 }
 
 function formatJson(value: string) {
-    if (!value.trim()) return value;
-    try {
-        return JSON.stringify(JSON.parse(value), null, 4);
-    } catch {
-        return value;
-    }
+    return formatJsonText(value) ?? value;
 }
 
 function SaveState({ autoSave, state }: { autoSave: boolean; state: RequestSaveState }) {
+    if (state === "conflict")
+        return (
+            <span className="request-save-state" data-state="error">
+                Cambio externo
+            </span>
+        );
     if (!autoSave && state === "idle") return <span className="request-save-state">Manual</span>;
-    if (state === "saving") {
+    if (state === "saving" || state === "reloading") {
         return (
             <span className="request-save-state" data-state="saving">
-                <FiLoader aria-hidden="true" /> Guardando…
+                <FiLoader aria-hidden="true" />{" "}
+                {state === "reloading" ? "Recargando…" : "Guardando…"}
             </span>
         );
     }
