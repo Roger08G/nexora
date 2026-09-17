@@ -5,7 +5,7 @@
 <h1 align="center">Nexora</h1>
 
 <p align="center">
-  Desarrollo backend local, privado y preparado para trabajar con Git en Windows.
+	🪐 Desarrollo backend local, privado y preparado para trabajar con Git en Windows 🌟
 </p>
 
 <p align="center">
@@ -360,3 +360,7 @@ issue o pull request.
 ## Licencia
 
 Nexora se distribuye bajo la [licencia MIT](LICENSE).
+
+## Créditos
+
+Desarrollado con IA (GPT-5.6 Sol).
