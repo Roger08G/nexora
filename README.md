@@ -5,7 +5,7 @@
 <h1 align="center">Nexora</h1>
 
 <p align="center">
-	🪐 Desarrollo backend local, privado y preparado para trabajar con Git en Windows 🌟
+	🪐 Desarrollo backend local, privado y preparado para trabajar con Git 🌟
 </p>
 
 <p align="center">
